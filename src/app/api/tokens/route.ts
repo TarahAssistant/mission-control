@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { readFile, writeFile, access } from 'fs/promises'
-import { dirname } from 'path'
+import fs from 'fs'
+import path, { dirname } from 'path'
+import os from 'os'
 import { config, ensureDirExists } from '@/lib/config'
 import { requireRole } from '@/lib/auth'
 import { getAllGatewaySessions } from '@/lib/sessions'
 import { logger } from '@/lib/logger'
 import { getDatabase } from '@/lib/db'
 import { calculateTokenCost } from '@/lib/token-pricing'
-import { getProviderSubscriptionFlags } from '@/lib/provider-subscriptions'
+import { getProviderSubscriptionFlags, getProviderFromModel } from '@/lib/provider-subscriptions'
 import { buildTaskCostReport, type TaskCostMetadata } from '@/lib/task-costs'
+import Database from 'better-sqlite3'
+
+export const dynamic = 'force-dynamic'
 
 const DATA_PATH = config.tokensPath
 
@@ -115,7 +120,7 @@ function normalizeTokenRecord(
     inputTokens,
     outputTokens,
     totalTokens,
-    cost: Number(record.cost ?? calculateTokenCost(model, inputTokens, outputTokens, { providerSubscriptions })),
+    cost: calculateTokenCost(model, inputTokens, outputTokens, { providerSubscriptions }),
     operation: String(record.operation ?? 'chat_completion'),
     taskId: record.taskId != null && Number.isFinite(Number(record.taskId)) ? Number(record.taskId) : null,
     workspaceId: record.workspaceId != null && Number.isFinite(Number(record.workspaceId)) ? Number(record.workspaceId) : 1,
@@ -169,20 +174,151 @@ async function loadTokenDataFromFile(workspaceId: number, providerSubscriptions:
   }
 }
 
-/**
- * Load token data from persistent file, falling back to deriving from session stores.
- */
-async function loadTokenData(workspaceId: number): Promise<TokenUsageRecord[]> {
-  const providerSubscriptions = getProviderSubscriptionFlags()
-  const dbRecords = loadTokenDataFromDb(workspaceId, providerSubscriptions)
-  const fileRecords = await loadTokenDataFromFile(workspaceId, providerSubscriptions)
-  const combined = dedupeTokenRecords([...dbRecords, ...fileRecords]).sort((a, b) => b.timestamp - a.timestamp)
-  if (combined.length > 0) {
-    return combined
+function loadClaudeCodeTokenData(workspaceId: number, providerSubscriptions: Record<string, boolean>): TokenUsageRecord[] {
+  const projectsDir = path.join(os.homedir(), '.claude', 'projects')
+  const historyFile = path.join(os.homedir(), '.claude', 'history.jsonl')
+  
+  const records: TokenUsageRecord[] = []
+  const filesToParse: string[] = []
+
+  if (fs.existsSync(historyFile)) filesToParse.push(historyFile)
+  
+  if (fs.existsSync(projectsDir)) {
+    try {
+      const projectFolders = fs.readdirSync(projectsDir)
+      for (const folder of projectFolders) {
+        const folderPath = path.join(projectsDir, folder)
+        if (!fs.statSync(folderPath).isDirectory()) continue
+        const files = fs.readdirSync(folderPath)
+        for (const file of files) {
+          if (file.endsWith('.jsonl')) filesToParse.push(path.join(folderPath, file))
+        }
+      }
+    } catch (e) {}
   }
 
-  // Final fallback: derive from in-memory sessions
-  return deriveFromSessions(workspaceId, providerSubscriptions)
+  for (const filePath of filesToParse) {
+    try {
+      // Skip files older than 30 days
+      const stats = fs.statSync(filePath)
+      if (Date.now() - stats.mtimeMs > 30 * 24 * 60 * 60 * 1000) continue
+
+      const content = fs.readFileSync(filePath, 'utf8')
+      const lines = content.split('\n')
+      
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const entry = JSON.parse(line)
+          // Look for 'usage' in assistant messages. 
+          // Claude-Code format varies, sometimes it's entry.message.usage, sometimes entry.usage
+          const assistantMsg = entry.message?.role === 'assistant' ? entry.message : (entry.role === 'assistant' ? entry : null)
+          if (!assistantMsg) continue
+          
+          const usage = assistantMsg.usage || entry.usage
+          if (!usage) continue
+
+          const model = assistantMsg.model || entry.model || 'claude-3-5-sonnet-latest'
+          const inputTokens = usage.input_tokens || 0
+          const outputTokens = usage.output_tokens || 0
+          const cacheRead = usage.cache_read_input_tokens || (usage.cache_read ? usage.cache_read.input_tokens : 0) || 0
+          const cacheWrite = usage.cache_creation_input_tokens || (usage.cache_creation ? usage.cache_creation.input_tokens : 0) || 0
+          const totalTokens = usage.total_tokens || (inputTokens + outputTokens + cacheRead + cacheWrite)
+          const timestamp = new Date(entry.timestamp).getTime()
+
+          records.push({
+            id: `claude-code-${entry.uuid || entry.id || Math.random().toString(36).slice(2, 7)}`,
+            model,
+            sessionId: `claude-code:${entry.sessionId || 'cli'}`,
+            agentName: 'claude-code',
+            timestamp,
+            inputTokens,
+            outputTokens,
+            totalTokens,
+            cost: calculateTokenCost(model, inputTokens, outputTokens, { providerSubscriptions, cacheRead, cacheWrite }),
+            operation: 'coding',
+            workspaceId,
+          })
+        } catch (e) {}
+      }
+    } catch (error) {}
+  }
+
+  return records
+}
+
+function loadOpenCodeTokenData(workspaceId: number, providerSubscriptions: Record<string, boolean>): TokenUsageRecord[] {
+  const dbPath = path.join(os.homedir(), '.local/share/opencode/opencode.db')
+  if (!fs.existsSync(dbPath)) return []
+
+  try {
+    const db = new Database(dbPath, { readonly: true })
+    const rows = db.prepare("SELECT data, time_created FROM message WHERE data LIKE '%tokens%'").all() as any[]
+    
+    const records: TokenUsageRecord[] = []
+    
+    for (const row of rows) {
+      try {
+        const data = JSON.parse(row.data)
+        if (data.role !== 'assistant' || !data.tokens) continue
+        
+        const model = data.modelID || (data.model ? (typeof data.model === 'object' ? data.model.modelID : data.model) : 'unknown')
+        const inputTokens = data.tokens.input || 0
+        const outputTokens = data.tokens.output || 0
+        const reasoningTokens = data.tokens.reasoning || 0
+        const cacheRead = data.tokens.cache?.read || 0
+        const cacheWrite = data.tokens.cache?.write || 0
+        
+        // Use the totalTokens from the database if available, otherwise sum it up
+        const totalTokens = data.tokens.total || (inputTokens + outputTokens + reasoningTokens + cacheRead + cacheWrite)
+        
+        records.push({
+          id: `opencode-${row.time_created}-${Math.random().toString(36).slice(2, 7)}`,
+          model,
+          sessionId: `opencode:${data.agent || 'cli'}`,
+          agentName: 'opencode',
+          timestamp: row.time_created,
+          inputTokens,
+          outputTokens: outputTokens + reasoningTokens, // reasoning tokens are priced as output
+          totalTokens,
+          cost: calculateTokenCost(model, inputTokens, outputTokens + reasoningTokens, { providerSubscriptions, cacheRead, cacheWrite }),
+          operation: data.mode || 'coding',
+          taskId: null,
+          workspaceId,
+        })
+      } catch (e) {}
+    }
+    
+    db.close()
+    return records
+  } catch (error) {
+    logger.warn({ err: error }, 'Failed to load token usage from OpenCode database')
+    return []
+  }
+}
+
+/**
+ * Load token data from all sources: DB, local ledger file, OpenCode DB, Claude CLI logs, and live sessions.
+ */
+async function loadTokenData(workspaceId: number, providerSubscriptions: Record<string, boolean>): Promise<TokenUsageRecord[]> {
+  const [dbRecords, fileRecords, opencodeRecords, claudecodeRecords] = await Promise.all([
+    loadTokenDataFromDb(workspaceId, providerSubscriptions),
+    loadTokenDataFromFile(workspaceId, providerSubscriptions),
+    loadOpenCodeTokenData(workspaceId, providerSubscriptions),
+    loadClaudeCodeTokenData(workspaceId, providerSubscriptions)
+  ])
+  
+  const sessionRecords = deriveFromSessions(workspaceId, providerSubscriptions)
+  
+  const combined = dedupeTokenRecords([
+    ...dbRecords, 
+    ...fileRecords, 
+    ...opencodeRecords, 
+    ...claudecodeRecords,
+    ...sessionRecords
+  ]).sort((a, b) => b.timestamp - a.timestamp)
+
+  return combined
 }
 
 /**
@@ -196,18 +332,74 @@ function deriveFromSessions(workspaceId: number, providerSubscriptions: Record<s
   for (const session of sessions) {
     const inputTokens = session.inputTokens || 0
     const outputTokens = session.outputTokens || 0
-    const totalTokens = inputTokens + outputTokens
+    const sessionUsage = session as typeof session & {
+      cacheRead?: number
+      cacheWrite?: number
+      cacheReadTokens?: number
+      cacheWriteTokens?: number
+    }
+    const cacheRead = sessionUsage.cacheReadTokens ?? sessionUsage.cacheRead ?? 0
+    const cacheWrite = sessionUsage.cacheWriteTokens ?? sessionUsage.cacheWrite ?? 0
+    const totalTokens = session.totalTokens || (inputTokens + outputTokens + cacheRead + cacheWrite)
     if (totalTokens <= 0 && !session.model) continue // Skip empty sessions
-    const cost = calculateTokenCost(session.model || '', inputTokens, outputTokens, { providerSubscriptions })
 
+    const modelName = session.model || 'unknown'
+    const provider = getProviderFromModel(modelName)
+    const isSubscribed = providerSubscriptions[provider] === true
+
+    // Determine effective token counts for cost estimation.
+    // Gateway sessions often only track the *last turn's* raw input/output while totalTokens
+    // reflects the cumulative context window. We use cacheRead/cacheWrite when available
+    // for accurate cost, and fall back to estimation from totalTokens.
+    let effectiveInput = inputTokens
+    let effectiveOutput = outputTokens
+    let effectiveCacheRead = cacheRead
+    let effectiveCacheWrite = cacheWrite
+
+    const accountedTokens = inputTokens + outputTokens + cacheRead + cacheWrite
+    if (totalTokens > accountedTokens * 2 && accountedTokens < totalTokens) {
+      // totalTokens is much larger than what we can account for — this is a cumulative session
+      // where input/output only track the last turn. Estimate the full breakdown.
+      const gap = totalTokens - accountedTokens
+      if (cacheRead > 0 || cacheWrite > 0) {
+        // We have some cache data, distribute the gap as additional cache reads (most likely scenario)
+        effectiveCacheRead += Math.floor(gap * 0.7)
+        effectiveInput += Math.floor(gap * 0.2)
+        effectiveOutput += Math.ceil(gap * 0.1)
+      } else {
+        // No cache data at all — estimate: 60% cache reads, 25% input, 15% output
+        effectiveCacheRead = Math.floor(totalTokens * 0.6)
+        effectiveInput = Math.floor(totalTokens * 0.25)
+        effectiveOutput = Math.ceil(totalTokens * 0.15)
+      }
+    } else if (inputTokens === 0 && outputTokens === 0 && totalTokens > 0) {
+      // Only totalTokens is set (older session format) — use cache data if available
+      if (cacheRead > 0 || cacheWrite > 0) {
+        effectiveInput = Math.max(inputTokens, Math.floor((totalTokens - cacheRead - cacheWrite) * 0.6))
+        effectiveOutput = Math.max(outputTokens, Math.ceil((totalTokens - cacheRead - cacheWrite) * 0.4))
+      } else {
+        effectiveInput = Math.floor(totalTokens * 0.5)
+        effectiveOutput = Math.ceil(totalTokens * 0.5)
+      }
+    }
+
+    let cost = 0
+    if (!isSubscribed) {
+      cost = calculateTokenCost(modelName, effectiveInput, effectiveOutput, {
+        providerSubscriptions,
+        cacheRead: effectiveCacheRead,
+        cacheWrite: effectiveCacheWrite,
+      })
+    }
+    
     records.push({
       id: `session-${session.agent}-${session.key}`,
-      model: session.model || 'unknown',
+      model: modelName,
       sessionId: `${session.agent}:${session.chatType}`,
       agentName: session.agent || 'unknown',
       timestamp: session.updatedAt,
-      inputTokens,
-      outputTokens,
+      inputTokens: effectiveInput,
+      outputTokens: effectiveOutput,
       totalTokens,
       cost,
       operation: session.chatType || 'chat',
@@ -313,19 +505,16 @@ export async function GET(request: NextRequest) {
     const action = (searchParams.get('action') || 'list').trim().toLowerCase()
     const timeframe = searchParams.get('timeframe') || 'all'
     const format = searchParams.get('format') || 'json'
+    const ignoreSubscriptions = searchParams.get('ignoreSubscriptions') === 'true'
 
     const workspaceId = auth.user.workspace_id ?? 1
-    const tokenData = await loadTokenData(workspaceId)
+    const providerSubscriptions = ignoreSubscriptions ? {} : getProviderSubscriptionFlags()
+    
+    logger.info({ ignoreSubscriptions, providerSubscriptions }, 'Token API requested')
+
+    const tokenData = await loadTokenData(workspaceId, providerSubscriptions)
     const filteredData = filterByTimeframe(tokenData, timeframe)
-
-    if (action === 'list') {
-      return NextResponse.json({
-        usage: filteredData.slice(0, 100),
-        total: filteredData.length,
-        timeframe,
-      })
-    }
-
+    
     if (action === 'stats') {
       const overallStats = calculateStats(filteredData)
 
@@ -363,6 +552,16 @@ export async function GET(request: NextRequest) {
       for (const [agent, records] of Object.entries(agentGroups)) {
         agentStats[agent] = calculateStats(records)
       }
+
+      logger.info({ 
+        totalRecords: tokenData.length, 
+        filteredRecords: filteredData.length,
+        totalTokens: overallStats.totalTokens,
+        totalCost: overallStats.totalCost,
+        ignoreSubscriptions,
+        timeframe,
+        models: Object.keys(modelStats).join(', ')
+      }, 'Token stats calculation complete')
 
       return NextResponse.json({
         summary: overallStats,

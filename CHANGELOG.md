@@ -2,16 +2,69 @@
 
 All notable changes to Mission Control are documented in this file.
 
+<!-- Maintainer note: add entries under [Unreleased] as PRs merge; bump to a version when releasing. -->
+
 ## [Unreleased]
 
-### Added
-- GitHub Sync now supports pulling and syncing Pull Requests alongside regular Issues
-- Tasks are now automatically synced to `taskboard.md` within the OpenClaw workspace directory, making it easier for local agents to read current tasks
-- Cron Management Panel now seamlessly lists and streams logs for local system scheduler tasks without requiring hardcoded frontend overrides
+### Fixed
+- SQLite `SQLITE_BUSY` contention — added `busy_timeout` pragma and guarded build-phase eager DB initialisation (#337)
+- Skill registry path traversal and SSRF — extended `SECURITY_RULES` with directory traversal patterns and private-IP/metadata URL detection (#338, #336)
+
+### Tests
+- Vitest coverage threshold enforcement — added coverage for pure utility modules to satisfy the 60% global threshold; threshold now passes in CI (#339)
+
+---
+
+## [2.0.1] - 2026-03-13
 
 ### Fixed
-- Fixed an environment configuration issue where `OPENCLAW_HOME` was defaulting to a Windows path (`C:\Users\Lucas\.openclaw`) within the Linux WSL2 environment, preventing access to memory files, configurations, and agent states.
-- Fixed a bug where `.env` in the OpenClaw state directory was improperly named `env`, which prevented the Integrations panel from reading existing API keys and tokens.
+- HTTP and Tailscale login broken by unconditional HTTPS redirect — replaced with opt-in `NEXT_PUBLIC_FORCE_HTTPS=1` (#309)
+- CSP nonce mismatch blocking inline scripts after login — nonce now propagated into SSR request headers (#308, #311)
+- Layout inline theme script missing `nonce` attribute, causing CSP violations on chunk loading (#308, #311)
+- Task dispatch sending agent display name instead of gateway ID — now resolves `openclawId` from config (#310)
+- Session cookie `Secure` flag forced in production even over HTTP — now derived from actual request protocol (#304)
+- Node version check changed from allowlist (22, 24) to floor (>=22) for future compatibility
+
+### Changed
+- CSP generation and browser-security helpers extracted to `src/lib/csp.ts` and `src/lib/browser-security.ts`
+
+### Contributors
+- @0xNyk
+- @polaris-dxz
+- @jaserNo1
+
+## [2.0.0] - 2026-03-11
+
+### Added
+- Dual-mode operations for both OpenClaw gateway deployments and local workstation installs
+- Hermes observability, including session, task, cron, memory, and transcript visibility
+- Obsidian-style memory knowledge system with graph visualization, health signals, and filesystem browser
+- Rebuilt onboarding flow with session-scoped walkthroughs, security scan, and OpenClaw gateway setup guidance
+- OpenClaw doctor status and in-app doctor fix workflow for runtime drift detection and remediation
+- Expanded OpenClaw dashboard coverage for channels, chat, sessions, cron, usage, devices, approvals, logs, and schema-backed config
+- Global exec approval overlay, unified cost tracker, and richer agent communication/session routing views
+- Embedded chat workspace, Claude Code task bridge, framework adapters, self-update flow, and stronger local agent/skill discovery
+- Automated task dispatch, automated Aegis review, natural-language recurring tasks, and richer gateway backup/update actions
+
+### Fixed
+- Agent and workspace deletion now removes OpenClaw config state correctly and refreshes the UI consistently
+- Security scan autofix no longer breaks host access or E2E runtime env state after applying fixes
+- Mission Control builds now isolate build-time SQLite state from runtime SQLite state, eliminating `SQLITE_BUSY` build contention
+- Standalone deploy/runtime handling now preserves data directories, static assets, and restart detection more reliably
+- OpenClaw config compatibility issues around malformed `model.primary` payloads, stale keys, and doctor warning classification
+- Local Hermes transcript loading, gateway chat/channel RPC fallbacks, and memory panel regressions from the refactor cycle
+- E2E harness isolation so tests use fresh temp OpenClaw state, temp skill roots, and deterministic scheduler behavior
+- Login/autofill/CSP regressions, websocket/device-identity edge cases, memory graph fit/overflow issues, and several panel parity gaps found during the refactor
+
+### Changed
+- Project version advanced to `2.0.0`
+- Node runtime policy standardized on `22.x` across local development, CI, Docker, and standalone deployment
+- README, landing-page handoff, and release documentation refreshed to match the current Mission Control interface and feature set
+- This release captures 189 commits on top of `main` and marks the major refactor branch as the new baseline for Mission Control
+- Navigation, loading, branding, and onboarding flows were redesigned to match the broader v2 operator experience
+
+### Contributors
+- @0xNyk
 
 ## [1.3.0] - 2026-03-02
 

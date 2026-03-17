@@ -7,7 +7,9 @@ import { logger } from '@/lib/logger';
 import { validateBody, updateTaskSchema } from '@/lib/validation';
 import { resolveMentionRecipients } from '@/lib/mentions';
 import { normalizeTaskUpdateStatus } from '@/lib/task-status';
-import { syncTaskboardMd } from '@/lib/taskboard-sync';
+import { pushTaskToGitHub } from '@/lib/github-sync-engine';
+import { pushTaskToGnap, removeTaskFromGnap } from '@/lib/gnap-sync';
+import { config } from '@/lib/config';
 
 function formatTicketRef(prefix?: string | null, num?: number | null): string | undefined {
   if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return undefined
@@ -386,10 +388,30 @@ export async function PUT(
     `).get(taskId, workspaceId) as Task;
     const parsedTask = mapTaskRow(updatedTask);
 
+    // Fire-and-forget outbound GitHub sync for relevant changes
+    const syncRelevantChanges = changes.some(c =>
+      c.startsWith('status:') || c.startsWith('priority:') || c.includes('title') || c.includes('assigned')
+    )
+    if (syncRelevantChanges && (updatedTask as any).github_repo) {
+      const project = db.prepare(`
+        SELECT id, github_repo, github_sync_enabled FROM projects
+        WHERE id = ? AND workspace_id = ?
+      `).get((updatedTask as any).project_id, workspaceId) as any
+      if (project?.github_sync_enabled) {
+        pushTaskToGitHub(updatedTask as any, project).catch(err =>
+          logger.error({ err, taskId }, 'Outbound GitHub sync failed')
+        )
+      }
+    }
+
+    // Fire-and-forget GNAP sync for task updates
+    if (config.gnap.enabled && config.gnap.autoSync && changes.length > 0) {
+      try { pushTaskToGnap(updatedTask as any, config.gnap.repoPath) }
+      catch (err) { logger.warn({ err, taskId }, 'GNAP sync failed for task update') }
+    }
+
     // Broadcast to SSE clients
     eventBus.broadcast('task.updated', parsedTask);
-
-    syncTaskboardMd().catch(e => logger.error({ err: e }, 'Failed to sync taskboard in PUT /api/tasks/[id]'));
 
     return NextResponse.json({ task: parsedTask });
   } catch (error) {
@@ -449,10 +471,14 @@ export async function DELETE(
       workspaceId
     );
 
+    // Remove from GNAP repo
+    if (config.gnap.enabled && config.gnap.autoSync) {
+      try { removeTaskFromGnap(taskId, config.gnap.repoPath) }
+      catch (err) { logger.warn({ err, taskId }, 'GNAP sync failed for task deletion') }
+    }
+
     // Broadcast to SSE clients
     eventBus.broadcast('task.deleted', { id: taskId, title: task.title });
-
-    syncTaskboardMd().catch(e => logger.error({ err: e }, 'Failed to sync taskboard in DELETE /api/tasks/[id]'));
 
     return NextResponse.json({ success: true });
   } catch (error) {

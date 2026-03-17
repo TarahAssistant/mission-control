@@ -4,13 +4,6 @@ import { getDatabase } from '@/lib/db';
 import { eventBus } from '@/lib/event-bus';
 import { logger } from '@/lib/logger';
 
-// Parse raw body for signature verification
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
-
 export async function POST(request: NextRequest) {
   try {
     const rawBody = await request.text();
@@ -68,7 +61,7 @@ export async function POST(request: NextRequest) {
         const recipient = 'operator'; 
         const workspaceId = 1; // Default workspace
 
-        const notificationMsg = `GitHub PR ${action}: [${repoName}] ${prTitle} by @${prUser}`;
+        const notificationMsg = `GitHub PR ${action}: [${repoName}#${pull_request.number}](${prUrl}) by @${prUser}\n\n**${prTitle}**`;
         const notificationTitle = `GitHub PR ${action}`;
         const sourceType = 'github_webhook';
         

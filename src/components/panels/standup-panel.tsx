@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useTranslations } from 'next-intl'
+import { Button } from '@/components/ui/button'
 import { createClientLogger } from '@/lib/client-logger'
 
 const log = createClientLogger('StandupPanel')
@@ -97,6 +99,7 @@ interface StandupHistory {
 }
 
 export function StandupPanel() {
+  const t = useTranslations('standup')
   const [standupReport, setStandupReport] = useState<StandupReport | null>(null)
   const [standupHistory, setStandupHistory] = useState<StandupHistory[]>([])
   const [loading, setLoading] = useState(false)
@@ -257,27 +260,25 @@ export function StandupPanel() {
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="flex justify-between items-center p-4 border-b border-border flex-shrink-0">
-        <h2 className="text-xl font-bold text-foreground">Daily Standup</h2>
+        <h2 className="text-xl font-bold text-foreground">{t('title')}</h2>
 
         <div className="flex items-center gap-3">
           {/* View Toggle */}
           <div className="flex bg-secondary rounded-lg p-1">
-            <button
+            <Button
               onClick={() => setView('current')}
-              className={`px-3 py-1 text-sm rounded-md transition-smooth ${
-                view === 'current' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-              }`}
+              variant={view === 'current' ? 'default' : 'ghost'}
+              size="sm"
             >
-              Current
-            </button>
-            <button
+              {t('viewCurrent')}
+            </Button>
+            <Button
               onClick={() => setView('history')}
-              className={`px-3 py-1 text-sm rounded-md transition-smooth ${
-                view === 'history' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-              }`}
+              variant={view === 'history' ? 'default' : 'ghost'}
+              size="sm"
             >
-              History
-            </button>
+              {t('viewHistory')}
+            </Button>
           </div>
 
           {view === 'current' && (
@@ -289,22 +290,24 @@ export function StandupPanel() {
                 className="bg-surface-1 text-foreground rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50 border border-border"
               />
 
-              <button
+              <Button
                 onClick={() => generateStandup()}
                 disabled={loading}
-                className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-smooth flex items-center gap-2"
+                size="sm"
+                className="flex items-center gap-2"
               >
                 {loading && <div className="animate-spin rounded-full h-3.5 w-3.5 border-2 border-primary-foreground/30 border-t-primary-foreground" />}
-                {loading ? 'Generating...' : 'Generate'}
-              </button>
+                {loading ? t('generating') : t('generate')}
+              </Button>
 
               {standupReport && (
-                <button
+                <Button
                   onClick={exportStandup}
-                  className="px-3 py-1.5 text-sm bg-green-500/20 text-green-400 border border-green-500/30 rounded-md hover:bg-green-500/30 transition-smooth"
+                  variant="success"
+                  size="sm"
                 >
-                  Export
-                </button>
+                  {t('export')}
+                </Button>
               )}
             </>
           )}
@@ -315,7 +318,7 @@ export function StandupPanel() {
       {error && (
         <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 m-4 rounded-lg text-sm flex items-center justify-between">
           <span>{error}</span>
-          <button onClick={() => setError(null)} className="text-red-400/60 hover:text-red-400 ml-2">×</button>
+          <Button onClick={() => setError(null)} variant="ghost" size="icon-xs" className="text-red-400/60 hover:text-red-400 ml-2 w-5 h-5">×</Button>
         </div>
       )}
 
@@ -328,10 +331,10 @@ export function StandupPanel() {
               {/* Report Header */}
               <div className="bg-card rounded-lg p-4 border border-border">
                 <h3 className="text-lg font-semibold text-foreground mb-2">
-                  Standup for {formatDate(standupReport.date)}
+                  {t('standupFor', { date: formatDate(standupReport.date) })}
                 </h3>
                 <p className="text-muted-foreground text-sm">
-                  Generated on {new Date(standupReport.generatedAt).toLocaleString()}
+                  {t('generatedOn', { date: new Date(standupReport.generatedAt).toLocaleString() })}
                 </p>
               </div>
 
@@ -339,26 +342,26 @@ export function StandupPanel() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="bg-card rounded-lg p-4 border border-border text-center">
                   <div className="text-2xl font-bold text-foreground">{standupReport.summary.totalCompleted}</div>
-                  <div className="text-sm text-green-400">Completed</div>
+                  <div className="text-sm text-green-400">{t('statCompleted')}</div>
                 </div>
                 <div className="bg-card rounded-lg p-4 border border-border text-center">
                   <div className="text-2xl font-bold text-foreground">{standupReport.summary.totalInProgress}</div>
-                  <div className="text-sm text-yellow-400">In Progress</div>
+                  <div className="text-sm text-yellow-400">{t('statInProgress')}</div>
                 </div>
                 <div className="bg-card rounded-lg p-4 border border-border text-center">
                   <div className="text-2xl font-bold text-foreground">{standupReport.summary.totalBlocked}</div>
-                  <div className="text-sm text-red-400">Blocked</div>
+                  <div className="text-sm text-red-400">{t('statBlocked')}</div>
                 </div>
                 <div className="bg-card rounded-lg p-4 border border-border text-center">
                   <div className="text-2xl font-bold text-foreground">{standupReport.summary.overdue}</div>
-                  <div className="text-sm text-orange-400">Overdue</div>
+                  <div className="text-sm text-orange-400">{t('statOverdue')}</div>
                 </div>
               </div>
 
               {/* Team Accomplishments */}
               {standupReport.teamAccomplishments.length > 0 && (
                 <div className="bg-card rounded-lg p-4 border border-border">
-                  <h4 className="text-lg font-semibold text-foreground mb-3">🎉 Team Accomplishments</h4>
+                  <h4 className="text-lg font-semibold text-foreground mb-3">🎉 {t('teamAccomplishments')}</h4>
                   <div className="space-y-2">
                     {standupReport.teamAccomplishments.map(task => (
                       <div key={task.id} className="flex justify-between items-center p-2 bg-green-900/20 rounded border-l-4 border-green-500">
@@ -373,7 +376,7 @@ export function StandupPanel() {
               {/* Team Blockers */}
               {standupReport.teamBlockers.length > 0 && (
                 <div className="bg-card rounded-lg p-4 border border-border">
-                  <h4 className="text-lg font-semibold text-foreground mb-3">🚫 Team Blockers</h4>
+                  <h4 className="text-lg font-semibold text-foreground mb-3">🚫 {t('teamBlockers')}</h4>
                   <div className="space-y-2">
                     {standupReport.teamBlockers.map(task => (
                       <div key={task.id} className="flex justify-between items-center p-2 bg-red-900/20 rounded border-l-4 border-red-500">
@@ -393,7 +396,7 @@ export function StandupPanel() {
               {/* Overdue Tasks */}
               {standupReport.overdueTasks.length > 0 && (
                 <div className="bg-card rounded-lg p-4 border border-border">
-                  <h4 className="text-lg font-semibold text-foreground mb-3">⏰ Overdue Tasks</h4>
+                  <h4 className="text-lg font-semibold text-foreground mb-3">⏰ {t('overdueTasks')}</h4>
                   <div className="space-y-2">
                     {standupReport.overdueTasks.map(task => (
                       <div key={task.id} className="flex justify-between items-center p-2 bg-orange-900/20 rounded border-l-4 border-orange-500">
@@ -403,7 +406,7 @@ export function StandupPanel() {
                             (Due: {new Date(task.due_date * 1000).toLocaleDateString()})
                           </span>
                         </div>
-                        <span className="text-orange-400 text-sm">{task.agent_name || 'Unassigned'}</span>
+                        <span className="text-orange-400 text-sm">{task.agent_name || t('unassigned')}</span>
                       </div>
                     ))}
                   </div>
@@ -412,7 +415,7 @@ export function StandupPanel() {
 
               {/* Individual Agent Reports */}
               <div className="space-y-4">
-                <h4 className="text-lg font-semibold text-foreground">👥 Individual Reports</h4>
+                <h4 className="text-lg font-semibold text-foreground">👥 {t('individualReports')}</h4>
                 {standupReport.agentReports.map(report => (
                   <div key={report.agent.name} className="bg-card rounded-lg p-4 border border-border">
                     <div className="flex justify-between items-start mb-4">
@@ -421,7 +424,7 @@ export function StandupPanel() {
                         <p className="text-muted-foreground text-sm">{report.agent.role}</p>
                       </div>
                       <div className="text-right text-sm">
-                        <div className="text-muted-foreground">Activity: {report.activity.actionCount} actions, {report.activity.commentsCount} comments</div>
+                        <div className="text-muted-foreground">{t('activitySummary', { actions: report.activity.actionCount, comments: report.activity.commentsCount })}</div>
                         {report.agent.last_activity && (
                           <div className="text-muted-foreground/50">{report.agent.last_activity}</div>
                         )}
@@ -431,7 +434,7 @@ export function StandupPanel() {
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                       {/* Completed Today */}
                       <div>
-                        <h6 className="text-green-400 font-medium mb-2">✅ Completed ({report.completedToday.length})</h6>
+                        <h6 className="text-green-400 font-medium mb-2">✅ {t('sectionCompleted', { count: report.completedToday.length })}</h6>
                         <div className="space-y-1">
                           {report.completedToday.map(task => (
                             <div key={task.id} className="text-sm text-foreground/80 truncate" title={task.title}>
@@ -439,14 +442,14 @@ export function StandupPanel() {
                             </div>
                           ))}
                           {report.completedToday.length === 0 && (
-                            <div className="text-sm text-muted-foreground/50 italic">None</div>
+                            <div className="text-sm text-muted-foreground/50 italic">{t('none')}</div>
                           )}
                         </div>
                       </div>
 
                       {/* In Progress */}
                       <div>
-                        <h6 className="text-yellow-400 font-medium mb-2">🔄 In Progress ({report.inProgress.length})</h6>
+                        <h6 className="text-yellow-400 font-medium mb-2">🔄 {t('sectionInProgress', { count: report.inProgress.length })}</h6>
                         <div className="space-y-1">
                           {report.inProgress.map(task => (
                             <div key={task.id} className="text-sm text-foreground/80 truncate" title={task.title}>
@@ -454,14 +457,14 @@ export function StandupPanel() {
                             </div>
                           ))}
                           {report.inProgress.length === 0 && (
-                            <div className="text-sm text-muted-foreground/50 italic">None</div>
+                            <div className="text-sm text-muted-foreground/50 italic">{t('none')}</div>
                           )}
                         </div>
                       </div>
 
                       {/* Assigned */}
                       <div>
-                        <h6 className="text-blue-400 font-medium mb-2">📋 Assigned ({report.assigned.length})</h6>
+                        <h6 className="text-blue-400 font-medium mb-2">📋 {t('sectionAssigned', { count: report.assigned.length })}</h6>
                         <div className="space-y-1">
                           {report.assigned.map(task => (
                             <div key={task.id} className="text-sm text-foreground/80">
@@ -472,14 +475,14 @@ export function StandupPanel() {
                             </div>
                           ))}
                           {report.assigned.length === 0 && (
-                            <div className="text-sm text-muted-foreground/50 italic">None</div>
+                            <div className="text-sm text-muted-foreground/50 italic">{t('none')}</div>
                           )}
                         </div>
                       </div>
 
                       {/* Blocked */}
                       <div>
-                        <h6 className="text-red-400 font-medium mb-2">🚫 Blocked ({report.blocked.length})</h6>
+                        <h6 className="text-red-400 font-medium mb-2">🚫 {t('sectionBlocked', { count: report.blocked.length })}</h6>
                         <div className="space-y-1">
                           {report.blocked.map(task => (
                             <div key={task.id} className="text-sm text-foreground/80">
@@ -490,7 +493,7 @@ export function StandupPanel() {
                             </div>
                           ))}
                           {report.blocked.length === 0 && (
-                            <div className="text-sm text-muted-foreground/50 italic">None</div>
+                            <div className="text-sm text-muted-foreground/50 italic">{t('none')}</div>
                           )}
                         </div>
                       </div>
@@ -502,21 +505,20 @@ export function StandupPanel() {
           ) : (
             // Empty state for current view
             <div className="flex flex-col items-center justify-center h-full text-center">
-              <div className="w-14 h-14 rounded-xl bg-surface-2 flex items-center justify-center mx-auto mb-4">
+              <div className="w-14 h-14 rounded-lg bg-surface-2 flex items-center justify-center mx-auto mb-4">
                 <svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-muted-foreground/40">
                   <path d="M2 12V4h3l2-2h2l2 2h3v8H2z" />
                   <path d="M5 8h6M8 5v6" />
                 </svg>
               </div>
-              <h3 className="text-lg font-semibold text-foreground mb-2">No Standup Generated</h3>
-              <p className="text-sm text-muted-foreground mb-4">Select a date and generate a report</p>
-              <button
+              <h3 className="text-lg font-semibold text-foreground mb-2">{t('noStandupGenerated')}</h3>
+              <p className="text-sm text-muted-foreground mb-4">{t('selectDatePrompt')}</p>
+              <Button
                 onClick={() => generateStandup()}
                 disabled={loading}
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50 transition-smooth"
               >
-                Generate Today&apos;s Standup
-              </button>
+                {t('generateToday')}
+              </Button>
             </div>
           )
         ) : (
@@ -528,7 +530,7 @@ export function StandupPanel() {
                   <rect x="3" y="2" width="10" height="12" rx="1" />
                   <path d="M6 5h4M6 8h4M6 11h2" />
                 </svg>
-                <p className="text-sm">No standup history found</p>
+                <p className="text-sm">{t('noHistory')}</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -538,18 +540,18 @@ export function StandupPanel() {
                       <div>
                         <h4 className="text-foreground font-medium">{formatDate(history.date)}</h4>
                         <p className="text-muted-foreground text-sm">
-                          Generated: {new Date(history.generatedAt).toLocaleString()}
+                          {t('historyGenerated', { date: new Date(history.generatedAt).toLocaleString() })}
                         </p>
                         <p className="text-muted-foreground text-sm">
-                          {history.agentCount} agents participated
+                          {t('historyAgentsParticipated', { count: history.agentCount })}
                         </p>
                       </div>
                       <div className="text-right">
                         {history.summary && (
                           <div className="text-sm text-muted-foreground">
-                            <div>Completed: {history.summary.completed || 0}</div>
-                            <div>In Progress: {history.summary.inProgress || 0}</div>
-                            <div>Blocked: {history.summary.blocked || 0}</div>
+                            <div>{t('historyCompleted', { count: history.summary.completed || 0 })}</div>
+                            <div>{t('historyInProgress', { count: history.summary.inProgress || 0 })}</div>
+                            <div>{t('historyBlocked', { count: history.summary.blocked || 0 })}</div>
                           </div>
                         )}
                       </div>

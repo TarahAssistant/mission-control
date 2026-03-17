@@ -1,6 +1,7 @@
 'use client'
 
 import { useMissionControl } from '@/store'
+import { Button } from '@/components/ui/button'
 
 interface ConnectionStatusProps {
   isConnected: boolean
@@ -17,10 +18,12 @@ export function ConnectionStatus({
 }: ConnectionStatusProps) {
   const { connection } = useMissionControl()
   const displayUrl = connection.url || 'ws://<gateway-host>:<gateway-port>'
+  const isGatewayOptional = process.env.NEXT_PUBLIC_GATEWAY_OPTIONAL === 'true'
 
   const getStatusColor = () => {
     if (isConnected) return 'bg-green-500 animate-pulse'
     if (connection.reconnectAttempts > 0) return 'bg-yellow-500'
+    if (isGatewayOptional && !isConnected) return 'bg-blue-500'
     return 'bg-red-500'
   }
 
@@ -30,6 +33,9 @@ export function ConnectionStatus({
     }
     if (connection.reconnectAttempts > 0) {
       return `Reconnecting... (${connection.reconnectAttempts}/10)`
+    }
+    if (isGatewayOptional && !isConnected) {
+      return 'Gateway Optional (Standalone)'
     }
     return 'Disconnected'
   }
@@ -50,38 +56,44 @@ export function ConnectionStatus({
       {/* Connection Controls */}
       <div className="flex items-center space-x-2">
         {isConnected ? (
-          <button
+          <Button
+            variant="destructive"
+            size="xs"
             onClick={onDisconnect}
-            className="px-3 py-1 bg-red-500/20 text-red-400 border border-red-500/30 rounded-md text-xs font-medium hover:bg-red-500/30 transition-colors"
             title="Disconnect from gateway"
           >
             Disconnect
-          </button>
+          </Button>
         ) : connection.reconnectAttempts > 0 ? (
-          <button
+          <Button
+            variant="outline"
+            size="xs"
             onClick={onDisconnect}
-            className="px-3 py-1 bg-gray-500/20 text-gray-400 border border-gray-500/30 rounded-md text-xs font-medium hover:bg-gray-500/30 transition-colors"
+            className="bg-gray-500/20 text-gray-400 border-gray-500/30 hover:bg-gray-500/30"
             title="Cancel reconnection attempts"
           >
             Cancel
-          </button>
+          </Button>
         ) : (
           <div className="flex space-x-1">
-            <button
+            <Button
+              variant="success"
+              size="xs"
               onClick={onConnect}
-              className="px-3 py-1 bg-green-500/20 text-green-400 border border-green-500/30 rounded-md text-xs font-medium hover:bg-green-500/30 transition-colors"
               title="Connect to gateway"
             >
               Connect
-            </button>
+            </Button>
             {onReconnect && (
-              <button
+              <Button
+                variant="outline"
+                size="xs"
                 onClick={onReconnect}
-                className="px-3 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-md text-xs font-medium hover:bg-blue-500/30 transition-colors"
+                className="bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30"
                 title="Reconnect with fresh session"
               >
                 Reconnect
-              </button>
+              </Button>
             )}
           </div>
         )}

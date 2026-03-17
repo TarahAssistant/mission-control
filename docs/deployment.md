@@ -48,6 +48,32 @@ PORT=3000 pnpm start
 
 **Important:** The production build bundles platform-specific native binaries. You must run `pnpm install` and `pnpm build` on the same OS and architecture as the target server. A build created on macOS will not work on Linux.
 
+## Production (Standalone)
+
+Use this for bare-metal deployments that run Next's standalone server directly.
+This path is preferred over ad hoc `node .next/standalone/server.js` because it
+syncs `.next/static` and `public/` into the standalone bundle before launch.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+pnpm start:standalone
+```
+
+For a full in-place update on the target host:
+
+```bash
+BRANCH=fix/refactor PORT=3000 pnpm deploy:standalone
+```
+
+What `deploy:standalone` does:
+- fetches and fast-forwards the requested branch
+- reinstalls dependencies with the lockfile
+- rebuilds from a clean `.next/`
+- stops the old process bound to the target port
+- starts the standalone server through `scripts/start-standalone.sh`
+- verifies that the rendered login page references a CSS asset and that the CSS is served as `text/css`
+
 ## Production (Docker)
 
 ```bash
@@ -149,3 +175,36 @@ Then restart the gateway and reconnect from Mission Control.
 
 Device identity signing uses WebCrypto and requires a secure browser context.
 Open Mission Control over HTTPS (or localhost), then reconnect.
+
+### "Gateway shows offline on VPS deployment"
+
+Browser WebSocket connections to non-standard ports (like 18789/18790) are often blocked by VPS firewall/provider rules.
+
+Quick option:
+
+```bash
+NEXT_PUBLIC_GATEWAY_OPTIONAL=true
+```
+
+This runs Mission Control in standalone mode (core features available, live gateway streams unavailable).
+
+Production option: reverse-proxy gateway WebSocket over 443.
+
+nginx example:
+
+```nginx
+location /gateway-ws {
+  proxy_pass http://127.0.0.1:18789;
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+  proxy_set_header Host $host;
+  proxy_read_timeout 86400;
+}
+```
+
+Then point UI to:
+
+```bash
+NEXT_PUBLIC_GATEWAY_URL=wss://your-domain.com/gateway-ws
+```

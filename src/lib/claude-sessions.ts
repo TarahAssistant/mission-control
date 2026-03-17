@@ -12,11 +12,15 @@
  * - Activity status (active if last message < 5 minutes ago)
  */
 
-import { readdirSync, readFileSync, statSync } from 'fs'
+import { createReadStream, readdirSync, statSync } from 'fs'
+import { createInterface } from 'readline'
 import { join } from 'path'
 import { config } from './config'
 import { getDatabase } from './db'
 import { logger } from './logger'
+
+// Skip JSONL files larger than this to avoid excessive I/O
+const MAX_SESSION_FILE_BYTES = 50 * 1024 * 1024 // 50 MB
 
 // Rough per-token pricing (USD) for cost estimation
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
@@ -27,8 +31,10 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
 
 const DEFAULT_PRICING = { input: 3 / 1_000_000, output: 15 / 1_000_000 }
 
-// Session is "active" if last message was within this window
-const ACTIVE_THRESHOLD_MS = 5 * 60 * 1000
+// Session is "active" if last activity was within this window.
+// Local CLI sessions can remain interactive without emitting frequent logs.
+const ACTIVE_THRESHOLD_MS = 90 * 60 * 1000
+const FUTURE_TOLERANCE_MS = 60 * 1000
 
 interface SessionStats {
   sessionId: string
@@ -69,12 +75,19 @@ interface JSONLEntry {
 }
 
 /** Parse a single JSONL file and extract session stats */
-function parseSessionFile(filePath: string, projectSlug: string): SessionStats | null {
-  try {
-    const content = readFileSync(filePath, 'utf-8')
-    const lines = content.split('\n').filter(Boolean)
+function clampTimestamp(ms: number): number {
+  if (!Number.isFinite(ms) || ms <= 0) return 0
+  const now = Date.now()
+  if (ms > now + FUTURE_TOLERANCE_MS) return now
+  return ms
+}
 
-    if (lines.length === 0) return null
+async function parseSessionFile(filePath: string, projectSlug: string, fileMtimeMs: number, fileSizeBytes: number): Promise<SessionStats | null> {
+  try {
+    if (fileSizeBytes > MAX_SESSION_FILE_BYTES) {
+      logger.warn({ filePath, fileSizeBytes }, 'Skipping oversized Claude session file')
+      return null
+    }
 
     let sessionId: string | null = null
     let model: string | null = null
@@ -90,77 +103,80 @@ function parseSessionFile(filePath: string, projectSlug: string): SessionStats |
     let firstMessageAt: string | null = null
     let lastMessageAt: string | null = null
     let lastUserPrompt: string | null = null
+    let hasLines = false
 
-    for (const line of lines) {
-      let entry: JSONLEntry
-      try {
-        entry = JSON.parse(line)
-      } catch {
-        continue
-      }
+    const rl = createInterface({
+      input: createReadStream(filePath, { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    })
 
-      // Extract session ID from first entry that has one
-      if (!sessionId && entry.sessionId) {
-        sessionId = entry.sessionId
-      }
+    try {
+      for await (const line of rl) {
+        if (!line) continue
+        hasLines = true
 
-      // Extract git branch
-      if (!gitBranch && entry.gitBranch) {
-        gitBranch = entry.gitBranch
-      }
-
-      // Extract project working directory
-      if (!projectPath && entry.cwd) {
-        projectPath = entry.cwd
-      }
-
-      // Track timestamps
-      if (entry.timestamp) {
-        if (!firstMessageAt) firstMessageAt = entry.timestamp
-        lastMessageAt = entry.timestamp
-      }
-
-      // Skip sidechain messages (subagent work) for counts
-      if (entry.isSidechain) continue
-
-      if (entry.type === 'user' && entry.message) {
-        userMessages++
-        // Extract last user prompt text
-        const msg = entry.message
-        if (typeof msg.content === 'string' && msg.content.length > 0) {
-          lastUserPrompt = msg.content.slice(0, 500)
-        }
-      }
-
-      if (entry.type === 'assistant' && entry.message) {
-        assistantMessages++
-
-        // Extract model
-        if (entry.message.model) {
-          model = entry.message.model
+        let entry: JSONLEntry
+        try {
+          entry = JSON.parse(line)
+        } catch {
+          continue
         }
 
-        // Extract token usage
-        const usage = entry.message.usage
-        if (usage) {
-          inputTokens += (usage.input_tokens || 0)
-          cacheReadTokens += (usage.cache_read_input_tokens || 0)
-          cacheCreationTokens += (usage.cache_creation_input_tokens || 0)
-          outputTokens += (usage.output_tokens || 0)
+        if (!sessionId && entry.sessionId) {
+          sessionId = entry.sessionId
         }
 
-        // Count tool uses in assistant content
-        if (Array.isArray(entry.message.content)) {
-          for (const block of entry.message.content) {
-            if (block.type === 'tool_use') toolUses++
+        if (!gitBranch && entry.gitBranch) {
+          gitBranch = entry.gitBranch
+        }
+
+        if (!projectPath && entry.cwd) {
+          projectPath = entry.cwd
+        }
+
+        if (entry.timestamp) {
+          if (!firstMessageAt) firstMessageAt = entry.timestamp
+          lastMessageAt = entry.timestamp
+        }
+
+        if (entry.isSidechain) continue
+
+        if (entry.type === 'user' && entry.message) {
+          userMessages++
+          const msg = entry.message
+          if (typeof msg.content === 'string' && msg.content.length > 0) {
+            lastUserPrompt = msg.content.slice(0, 500)
+          }
+        }
+
+        if (entry.type === 'assistant' && entry.message) {
+          assistantMessages++
+
+          if (entry.message.model) {
+            model = entry.message.model
+          }
+
+          const usage = entry.message.usage
+          if (usage) {
+            inputTokens += (usage.input_tokens || 0)
+            cacheReadTokens += (usage.cache_read_input_tokens || 0)
+            cacheCreationTokens += (usage.cache_creation_input_tokens || 0)
+            outputTokens += (usage.output_tokens || 0)
+          }
+
+          if (Array.isArray(entry.message.content)) {
+            for (const block of entry.message.content) {
+              if (block.type === 'tool_use') toolUses++
+            }
           }
         }
       }
+    } finally {
+      rl.close()
     }
 
-    if (!sessionId) return null
+    if (!hasLines || !sessionId || (userMessages === 0 && assistantMessages === 0)) return null
 
-    // Estimate cost (cache reads = 10% of input, cache creation = 125% of input)
     const pricing = (model && MODEL_PRICING[model]) || DEFAULT_PRICING
     const estimatedCost =
       inputTokens * pricing.input +
@@ -168,12 +184,13 @@ function parseSessionFile(filePath: string, projectSlug: string): SessionStats |
       cacheCreationTokens * pricing.input * 1.25 +
       outputTokens * pricing.output
 
-    // Determine if active
-    const isActive = lastMessageAt
-      ? (Date.now() - new Date(lastMessageAt).getTime()) < ACTIVE_THRESHOLD_MS
-      : false
+    const parsedFirstMs = firstMessageAt ? clampTimestamp(new Date(firstMessageAt).getTime()) : 0
+    const parsedLastMs = lastMessageAt ? clampTimestamp(new Date(lastMessageAt).getTime()) : 0
+    const mtimeMs = clampTimestamp(fileMtimeMs)
+    const effectiveLastMs = Math.max(parsedLastMs, mtimeMs)
+    const effectiveFirstMs = parsedFirstMs || mtimeMs
+    const isActive = effectiveLastMs > 0 && (Date.now() - effectiveLastMs) < ACTIVE_THRESHOLD_MS
 
-    // Store total input tokens (including cache) for display
     const totalInputTokens = inputTokens + cacheReadTokens + cacheCreationTokens
 
     return {
@@ -188,8 +205,8 @@ function parseSessionFile(filePath: string, projectSlug: string): SessionStats |
       inputTokens: totalInputTokens,
       outputTokens,
       estimatedCost: Math.round(estimatedCost * 10000) / 10000,
-      firstMessageAt,
-      lastMessageAt,
+      firstMessageAt: effectiveFirstMs ? new Date(effectiveFirstMs).toISOString() : null,
+      lastMessageAt: effectiveLastMs ? new Date(effectiveLastMs).toISOString() : null,
       lastUserPrompt,
       isActive,
     }
@@ -200,7 +217,7 @@ function parseSessionFile(filePath: string, projectSlug: string): SessionStats |
 }
 
 /** Scan all Claude Code projects and discover sessions */
-export function scanClaudeSessions(): SessionStats[] {
+export async function scanClaudeSessions(): Promise<SessionStats[]> {
   const claudeHome = config.claudeHome
   if (!claudeHome) return []
 
@@ -225,7 +242,6 @@ export function scanClaudeSessions(): SessionStats[] {
     }
     if (!stat.isDirectory()) continue
 
-    // Find JSONL files in this project
     let files: string[]
     try {
       files = readdirSync(projectDir).filter(f => f.endsWith('.jsonl'))
@@ -235,7 +251,13 @@ export function scanClaudeSessions(): SessionStats[] {
 
     for (const file of files) {
       const filePath = join(projectDir, file)
-      const parsed = parseSessionFile(filePath, projectSlug)
+      let fileStat
+      try {
+        fileStat = statSync(filePath)
+      } catch {
+        continue // file disappeared between readdir and stat
+      }
+      const parsed = await parseSessionFile(filePath, projectSlug, fileStat.mtimeMs, fileStat.size)
       if (parsed) sessions.push(parsed)
     }
   }
@@ -243,16 +265,27 @@ export function scanClaudeSessions(): SessionStats[] {
   return sessions
 }
 
-/** Scan and upsert sessions into the database */
-export async function syncClaudeSessions(): Promise<{ ok: boolean; message: string }> {
+// Throttle full disk scans — at most once per 30 seconds
+let lastSyncAt = 0
+let lastSyncResult: { ok: boolean; message: string } = { ok: true, message: 'Not yet scanned' }
+const SYNC_THROTTLE_MS = 30_000
+
+/** Scan and upsert sessions into the database (throttled to avoid repeated disk scans) */
+export async function syncClaudeSessions(force = false): Promise<{ ok: boolean; message: string }> {
+  const nowMs = Date.now()
+  if (!force && lastSyncAt > 0 && (nowMs - lastSyncAt) < SYNC_THROTTLE_MS) {
+    return lastSyncResult
+  }
   try {
-    const sessions = scanClaudeSessions()
+    const sessions = await scanClaudeSessions()
     if (sessions.length === 0) {
-      return { ok: true, message: 'No Claude sessions found' }
+      lastSyncAt = Date.now()
+      lastSyncResult = { ok: true, message: 'No Claude sessions found' }
+      return lastSyncResult
     }
 
     const db = getDatabase()
-    const now = Math.floor(Date.now() / 1000)
+    const nowSec = Math.floor(Date.now() / 1000)
 
     const upsert = db.prepare(`
       INSERT INTO claude_sessions (
@@ -289,19 +322,20 @@ export async function syncClaudeSessions(): Promise<{ ok: boolean; message: stri
           s.userMessages, s.assistantMessages, s.toolUses,
           s.inputTokens, s.outputTokens, s.estimatedCost,
           s.firstMessageAt, s.lastMessageAt, s.lastUserPrompt,
-          s.isActive ? 1 : 0, now, now,
+          s.isActive ? 1 : 0, nowSec, nowSec,
         )
         upserted++
       }
     })()
 
     const active = sessions.filter(s => s.isActive).length
-    return {
-      ok: true,
-      message: `Scanned ${upserted} session(s), ${active} active`,
-    }
+    lastSyncAt = Date.now()
+    lastSyncResult = { ok: true, message: `Scanned ${upserted} session(s), ${active} active` }
+    return lastSyncResult
   } catch (err: any) {
     logger.error({ err }, 'Claude session sync failed')
-    return { ok: false, message: `Scan failed: ${err.message}` }
+    lastSyncAt = Date.now()
+    lastSyncResult = { ok: false, message: `Scan failed: ${err.message}` }
+    return lastSyncResult
   }
 }
