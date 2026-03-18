@@ -2,7 +2,7 @@ const withNextIntl = require('next-intl/plugin')('./src/i18n/request.ts')
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
+  // output: 'standalone', // Disabled — we use a custom server.js (WS proxy) which needs next() API
   outputFileTracingExcludes: {
     '/*': ['./.data/**/*'],
   },

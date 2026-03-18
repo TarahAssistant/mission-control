@@ -656,8 +656,25 @@ export function useWebSocket() {
       browserProtocol: window.location.protocol,
     })
 
-    const parsed = new URL(built, window.location.origin)
-    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : parsed.protocol === 'http:' ? 'ws:' : parsed.protocol
+    let parsed;
+    try {
+      // If it's a relative path like /ws-proxy, build it cleanly against the current window location
+      if (built.startsWith('/')) {
+        parsed = new URL(built, window.location.origin)
+      } else {
+        parsed = new URL(built, window.location.origin)
+      }
+    } catch {
+      // Fallback
+      return built
+    }
+    
+    // Explicitly upgrade Tailscale https to wss
+    if (window.location.protocol === 'https:') {
+       parsed.protocol = 'wss:'
+    } else {
+       parsed.protocol = 'ws:'
+    }
     parsed.hash = ''
     return parsed.toString().replace(/\/$/, '').replace('/?', '?')
   }, [])

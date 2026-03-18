@@ -51,6 +51,11 @@ export function buildGatewayWebSocketUrl(input: {
     return `ws://127.0.0.1:${port || 18789}`
   }
 
+  // Handle explicit relative proxy paths (e.g. /ws-proxy)
+  if (rawHost.startsWith('/')) {
+    return rawHost
+  }
+
   const prefixed =
     rawHost.startsWith('ws://') ||
     rawHost.startsWith('wss://') ||

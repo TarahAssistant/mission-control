@@ -184,7 +184,8 @@ export default function Home() {
         process.env.NEXT_PUBLIC_GATEWAY_PROTOCOL ||
         (window.location.protocol === 'https:' ? 'wss' : 'ws')
       const wsUrl = explicitWsUrl || `${gatewayProto}://${gatewayHost}:${gatewayPort}`
-      connect(wsUrl)
+      const envToken = process.env.NEXT_PUBLIC_GATEWAY_TOKEN || ''
+      connect(wsUrl, envToken || undefined)
     }
 
     const connectWithPrimaryGateway = async (): Promise<{ attempted: boolean; connected: boolean }> => {
