@@ -23,7 +23,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-Then open `http://localhost:3000` and sign in with the seeded `AUTH_USER`/`AUTH_PASS` values from your environment.
+Then open `http://localhost:3005` and sign in with the seeded `AUTH_USER`/`AUTH_PASS` values from your environment.
 
 ## Core Concepts
 

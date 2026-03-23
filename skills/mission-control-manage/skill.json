@@ -8,7 +8,7 @@
   "parameters": {
     "base_url": {
       "type": "string",
-      "default": "http://localhost:3000",
+      "default": "http://localhost:3005",
       "description": "Mission Control base URL"
     },
     "api_key": {

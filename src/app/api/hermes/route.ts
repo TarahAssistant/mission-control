@@ -98,7 +98,7 @@ Mission Control hook for Hermes Agent.
 Reports session telemetry to the MC /api/sessions endpoint.
 
 Configuration (via ~/.hermes/.env or environment):
-  MC_URL      - Mission Control base URL (default: http://localhost:3000)
+  MC_URL      - Mission Control base URL (default: http://localhost:3005)
   MC_API_KEY  - API key for authentication (optional)
 """
 
@@ -108,7 +108,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("hooks.mission-control")
 
-MC_URL = os.environ.get("MC_URL", "http://localhost:3000")
+MC_URL = os.environ.get("MC_URL", "http://localhost:3005")
 MC_API_KEY = os.environ.get("MC_API_KEY", "")
 
 

@@ -4,7 +4,7 @@
   "description": "OpenClaw Mission Control — open-source agent orchestration dashboard",
   "scripts": {
     "verify:node": "node scripts/check-node-version.mjs",
-    "dev": "pnpm run verify:node && next dev --hostname 127.0.0.1 --port ${PORT:-3000}",
+    "dev": "pnpm run verify:node && next dev --hostname 127.0.0.1 --port ${PORT:-3005}",
     "build": "pnpm run verify:node && next build",
     "start": "node server.js",
     "start:standalone": "pnpm run verify:node && bash scripts/start-standalone.sh",

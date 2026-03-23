@@ -12,7 +12,7 @@
     Deployment mode: "local" (default) or "docker".
 
 .PARAMETER Port
-    Port the Next.js server listens on (default: 3000).
+    Port the Next.js server listens on (default: 3005).
 
 .PARAMETER DataDir
     Custom data directory path (default: .data/ in project root).
@@ -38,7 +38,7 @@ param(
     [ValidateSet("local", "docker")]
     [string]$Mode = "",
 
-    [int]$Port = 3000,
+    [int]$Port = 3005,
 
     [string]$DataDir = "",
 
@@ -193,8 +193,8 @@ function New-EnvFile {
     $content = $content -replace '(?m)^# AUTH_SECRET=.*',  "AUTH_SECRET=$authSecret"
 
     # Set port if non-default
-    if ($script:Port -ne 3000) {
-        $content = $content -replace '(?m)^# PORT=3000', "PORT=$($script:Port)"
+    if ($script:Port -ne 3005) {
+        $content = $content -replace '(?m)^# PORT=3005', "PORT=$($script:Port)"
     }
 
     $content | Set-Content $envPath -NoNewline

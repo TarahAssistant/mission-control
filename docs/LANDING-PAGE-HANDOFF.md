@@ -190,7 +190,7 @@ git clone https://github.com/builderz-labs/mission-control.git
 cd mission-control
 pnpm install
 cp .env.example .env    # edit with your values
-pnpm dev                # http://localhost:3000
+pnpm dev                # http://localhost:3005
 ```
 
 Initial login seeded from `AUTH_USER` / `AUTH_PASS` on first run.

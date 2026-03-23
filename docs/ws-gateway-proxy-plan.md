@@ -85,7 +85,7 @@ app.prepare().then(() => {
 
 ```json
 // Before:
-"start": "next start --hostname 0.0.0.0 --port ${PORT:-3000}"
+"start": "next start --hostname 0.0.0.0 --port ${PORT:-3005}"
 
 // After:
 "start": "node server.js"

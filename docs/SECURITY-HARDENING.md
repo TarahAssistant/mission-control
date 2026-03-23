@@ -14,8 +14,8 @@ bash scripts/station-doctor.sh         # Check runtime health
 Or use the diagnostics API (admin only):
 
 ```bash
-curl -H "x-api-key: $API_KEY" http://localhost:3000/api/diagnostics
-curl -H "x-api-key: $API_KEY" http://localhost:3000/api/security-audit?timeframe=day
+curl -H "x-api-key: $API_KEY" http://localhost:3005/api/diagnostics
+curl -H "x-api-key: $API_KEY" http://localhost:3005/api/security-audit?timeframe=day
 ```
 
 The `posture.score` field (0-100) gives a quick posture assessment. The **Security Audit Panel** (`/security` in the dashboard) provides a full real-time view with timeline charts, agent trust scores, and eval results.

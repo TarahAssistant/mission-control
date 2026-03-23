@@ -44,7 +44,7 @@ cd mission-control
 bash install.sh --docker
 ```
 
-The installer auto-generates secure credentials, starts the container, and runs an OpenClaw fleet health check. Open `http://localhost:3000` to create your admin account.
+The installer auto-generates secure credentials, starts the container, and runs an OpenClaw fleet health check. Open `http://localhost:3005` to create your admin account.
 
 ### One-Command Install (Local)
 
@@ -82,10 +82,10 @@ git clone https://github.com/builderz-labs/mission-control.git
 cd mission-control
 nvm use 22            # or: nvm use 24
 pnpm install
-pnpm dev                # http://localhost:3000/setup
+pnpm dev                # http://localhost:3005/setup
 ```
 
-On first run, visit `http://localhost:3000/setup` to create your admin account. Secrets (`AUTH_SECRET`, `API_KEY`) are auto-generated and persisted to `.data/`.
+On first run, visit `http://localhost:3005/setup` to create your admin account. Secrets (`AUTH_SECRET`, `API_KEY`) are auto-generated and persisted to `.data/`.
 
 For CI/automation, set `AUTH_USER` and `AUTH_PASS` env vars to seed the admin from environment instead.
 
@@ -121,7 +121,7 @@ For production VPS setups, you can also proxy gateway WebSockets over 443. See `
 docker compose up
 ```
 
-No `.env` file needed. The container auto-generates `AUTH_SECRET` and `API_KEY` on first boot and persists them across restarts. Visit `http://localhost:3000` to create your admin account.
+No `.env` file needed. The container auto-generates `AUTH_SECRET` and `API_KEY` on first boot and persists them across restarts. Visit `http://localhost:3005` to create your admin account.
 
 Release automation publishes multi-arch images to:
 - `ghcr.io/builderz-labs/mission-control`

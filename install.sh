@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-MC_PORT="${MC_PORT:-3000}"
+MC_PORT="${MC_PORT:-3005}"
 MC_DATA_DIR=""
 DEPLOY_MODE=""
 SKIP_OPENCLAW=false
@@ -150,11 +150,11 @@ setup_env() {
   bash "$INSTALL_DIR/scripts/generate-env.sh" "$INSTALL_DIR/.env"
 
   # Set the port if non-default
-  if [[ "$MC_PORT" != "3000" ]]; then
+  if [[ "$MC_PORT" != "3005" ]]; then
     if [[ "$(uname)" == "Darwin" ]]; then
-      sed -i '' "s|^# PORT=3000|PORT=$MC_PORT|" "$INSTALL_DIR/.env"
+      sed -i '' "s|^# PORT=3005|PORT=$MC_PORT|" "$INSTALL_DIR/.env"
     else
-      sed -i "s|^# PORT=3000|PORT=$MC_PORT|" "$INSTALL_DIR/.env"
+      sed -i "s|^# PORT=3005|PORT=$MC_PORT|" "$INSTALL_DIR/.env"
     fi
   fi
 

@@ -9,7 +9,7 @@ Mission Control (MC) is an AI agent orchestration dashboard with real-time SSE/W
 
 ## Quick Start
 
-**Base URL:** `http://localhost:3000` (default Next.js dev) or your deployed host.
+**Base URL:** `http://localhost:3005` (default Next.js dev) or your deployed host.
 
 **Auth header:** `x-api-key: <your-api-key>`
 
@@ -17,7 +17,7 @@ Mission Control (MC) is an AI agent orchestration dashboard with real-time SSE/W
 
 ```bash
 # 1. Register
-curl -X POST http://localhost:3000/api/adapters \
+curl -X POST http://localhost:3005/api/adapters \
   -H "Content-Type: application/json" \
   -H "x-api-key: $MC_API_KEY" \
   -d '{
@@ -27,7 +27,7 @@ curl -X POST http://localhost:3000/api/adapters \
   }'
 
 # 2. Heartbeat (repeat every 5 minutes)
-curl -X POST http://localhost:3000/api/adapters \
+curl -X POST http://localhost:3005/api/adapters \
   -H "Content-Type: application/json" \
   -H "x-api-key: $MC_API_KEY" \
   -d '{

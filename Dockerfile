@@ -42,7 +42,7 @@ RUN echo 'const http=require("http");const r=http.get("http://localhost:"+(proce
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 USER nextjs
-ENV PORT=3000
+ENV PORT=3005
 EXPOSE 3000
 ENV HOSTNAME=0.0.0.0
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

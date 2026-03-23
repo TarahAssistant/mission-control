@@ -7,7 +7,7 @@ Connect CLI tools (Claude Code, Codex, custom agents) directly to Mission Contro
 ### 1. Register a connection
 
 ```bash
-curl -X POST http://localhost:3000/api/connect \
+curl -X POST http://localhost:3005/api/connect \
   -H "Content-Type: application/json" \
   -H "x-api-key: YOUR_API_KEY" \
   -d '{
@@ -40,7 +40,7 @@ Response:
 Send heartbeats to stay alive and optionally report token usage:
 
 ```bash
-curl -X POST http://localhost:3000/api/agents/42/heartbeat \
+curl -X POST http://localhost:3005/api/agents/42/heartbeat \
   -H "Content-Type: application/json" \
   -H "x-api-key: YOUR_API_KEY" \
   -d '{
@@ -60,7 +60,7 @@ Recommended heartbeat interval: **30 seconds**.
 ### 3. Subscribe to events (SSE)
 
 ```bash
-curl -N http://localhost:3000/api/events \
+curl -N http://localhost:3005/api/events \
   -H "x-api-key: YOUR_API_KEY"
 ```
 
@@ -71,7 +71,7 @@ Receives real-time events: task assignments, mentions, agent status changes, etc
 For bulk token reporting (separate from heartbeat):
 
 ```bash
-curl -X POST http://localhost:3000/api/tokens \
+curl -X POST http://localhost:3005/api/tokens \
   -H "Content-Type: application/json" \
   -H "x-api-key: YOUR_API_KEY" \
   -d '{
@@ -85,7 +85,7 @@ curl -X POST http://localhost:3000/api/tokens \
 ### 5. Disconnect
 
 ```bash
-curl -X DELETE http://localhost:3000/api/connect \
+curl -X DELETE http://localhost:3005/api/connect \
   -H "Content-Type: application/json" \
   -H "x-api-key: YOUR_API_KEY" \
   -d '{"connection_id": "550e8400-e29b-41d4-a716-446655440000"}'

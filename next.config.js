@@ -1,3 +1,4 @@
+const path = require('path')
 const withNextIntl = require('next-intl/plugin')('./src/i18n/request.ts')
 
 /** @type {import('next').NextConfig} */
@@ -6,7 +7,9 @@ const nextConfig = {
   outputFileTracingExcludes: {
     '/*': ['./.data/**/*'],
   },
-  turbopack: {},
+  turbopack: {
+    root: path.join(__dirname),
+  },
   // Transpile ESM-only packages so they resolve correctly in all environments
   transpilePackages: ['react-markdown', 'remark-gfm'],
   

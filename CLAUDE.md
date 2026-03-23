@@ -17,12 +17,12 @@ pnpm build
 ```
 
 Secrets (AUTH_SECRET, API_KEY) auto-generate on first run if not set.
-Visit `http://localhost:3000/setup` to create an admin account, or set `AUTH_USER`/`AUTH_PASS` in `.env` for headless/CI seeding.
+Visit `http://localhost:3005/setup` to create an admin account, or set `AUTH_USER`/`AUTH_PASS` in `.env` for headless/CI seeding.
 
 ## Run
 
 ```bash
-pnpm dev              # development (localhost:3000)
+pnpm dev              # development (localhost:3005)
 pnpm start            # production
 node .next/standalone/server.js   # standalone mode (after build)
 ```

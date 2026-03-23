@@ -48,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/builderz-labs/mission-control/main/
 
 After installation:
 
-1. Open `http://localhost:3000` (or your configured port)
+1. Open `http://localhost:3005` (or your configured port)
 2. Log in with the credentials printed by the installer (also in `.env`)
 3. Configure your OpenClaw gateway connection in Settings
 4. Register agents via the Agents panel
