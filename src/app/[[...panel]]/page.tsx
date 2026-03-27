@@ -527,10 +527,10 @@ function ContentRouter({ tab }: { tab: string }) {
     case 'documents':
       return <DocumentsPanel />
     case 'cost-tracker':
-    case 'tokens':
-      return <TokenDashboardPanel />
     case 'agent-costs':
       return <CostTrackerPanel />
+    case 'tokens':
+      return <TokenDashboardPanel />
     case 'users':
       return <UserManagementPanel />
     case 'history':

@@ -17,7 +17,7 @@ const DEFAULT_PREFETCH_PANELS = [
   'agents',
   'activity',
   'notifications',
-  'tokens',
+  'cost-tracker',
 ]
 
 function safePrefetch(router: ReturnType<typeof useRouter>, href: string) {

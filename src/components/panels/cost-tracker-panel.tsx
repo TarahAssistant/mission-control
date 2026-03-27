@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { useMissionControl } from '@/store'
 import { createClientLogger } from '@/lib/client-logger'
+import { detectProvider } from '@/lib/token-utils'
 import {
   PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, BarChart, Bar,
@@ -73,6 +74,29 @@ interface SessionCostEntry {
 // ── Helpers ──────────────────────────────────────────
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658', '#ff6b6b']
+
+const PROVIDER_COLORS: Record<string, string> = {
+  Anthropic: '#d97706',
+  OpenAI: '#10b981',
+  Google: '#3b82f6',
+  xAI: '#a855f7',
+  Mistral: '#f97316',
+  'Venice AI': '#14b8a6',
+  Meta: '#6366f1',
+  DeepSeek: '#06b6d4',
+  Cohere: '#ec4899',
+  Other: '#6b7280',
+}
+
+interface ProviderStat {
+  provider: string
+  cost: number
+  tokens: number
+  requests: number
+  models: number
+}
+
+const formatProviderName = (provider: string) => provider === 'xAI' ? 'xAI / Grok' : provider
 
 const formatNumber = (num: number) => {
   if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M'
@@ -210,7 +234,7 @@ export function CostTrackerPanel() {
             <h1 className="text-3xl font-bold text-foreground">{t('title')}</h1>
             <p className="text-muted-foreground mt-1">{t('subtitle')}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3 justify-end">
             {/* View tabs */}
             <div className="flex rounded-lg border border-border overflow-hidden">
               {(['overview', 'agents', 'sessions', 'tasks'] as const).map(v => (
@@ -226,16 +250,20 @@ export function CostTrackerPanel() {
               ))}
             </div>
             <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
-              <span className="text-[11px] text-muted-foreground">Cost mode</span>
+              <span className="text-[11px] text-muted-foreground">Cost mode (subscription-adjusted vs raw)</span>
               <div className="flex rounded-md border border-border overflow-hidden">
                 <button
                   onClick={() => setIgnoreSubscriptions(false)}
+                  title="Adjusted: subscription offsets/discounts applied"
+                  aria-label="Adjusted cost mode with subscription offsets"
                   className={`px-2 py-1 text-[11px] font-medium transition-colors ${!ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
                 >
                   Adjusted
                 </button>
                 <button
                   onClick={() => setIgnoreSubscriptions(true)}
+                  title="Raw: ignore subscription offsets and show full metered cost"
+                  aria-label="Raw cost mode without subscription offsets"
                   className={`px-2 py-1 text-[11px] font-medium transition-colors ${ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
                 >
                   Raw
@@ -295,6 +323,43 @@ function OverviewView({
   onRefresh: () => void
 }) {
   const t = useTranslations('costTracker')
+
+  const providerData = useMemo<ProviderStat[]>(() => {
+    if (!stats) return []
+    const aggregate: Record<string, ProviderStat> = {
+      xAI: {
+        provider: 'xAI',
+        cost: 0,
+        tokens: 0,
+        requests: 0,
+        models: 0,
+      },
+    }
+
+    for (const [model, modelStats] of Object.entries(stats.models)) {
+      const provider = detectProvider(model)
+      if (!aggregate[provider]) {
+        aggregate[provider] = {
+          provider,
+          cost: 0,
+          tokens: 0,
+          requests: 0,
+          models: 0,
+        }
+      }
+
+      aggregate[provider].cost += modelStats.totalCost
+      aggregate[provider].tokens += modelStats.totalTokens
+      aggregate[provider].requests += modelStats.requestCount
+      aggregate[provider].models += 1
+    }
+
+    return Object.values(aggregate)
+      .sort((a, b) => b.cost - a.cost)
+  }, [stats])
+
+  const xaiProvider = providerData.find((provider) => provider.provider === 'xAI')
+
   if (!stats) {
     return (
       <div className="text-center text-muted-foreground py-12">
@@ -363,6 +428,49 @@ function OverviewView({
             {taskData ? `${((1 - taskData.unattributed.totalCost / Math.max(stats.summary.totalCost, 0.0001)) * 100).toFixed(0)}%` : '-'}
           </div>
           <div className="text-sm text-muted-foreground">{t('taskAttributed')}</div>
+        </div>
+      </div>
+
+      {/* Provider visibility (xAI/Grok highlighted) */}
+      <div className="bg-card border border-border rounded-lg p-6 space-y-4">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <h2 className="text-xl font-semibold">Provider breakdown</h2>
+          <span className="text-xs text-muted-foreground">xAI / Grok is tracked as its own provider</span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="rounded-lg border border-purple-500/40 bg-purple-500/10 p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-semibold text-purple-200">xAI / Grok</span>
+              <span className="inline-flex h-2.5 w-2.5 rounded-full bg-purple-400" />
+            </div>
+            <div className="text-2xl font-bold text-foreground">{formatCost(xaiProvider?.cost || 0)}</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {formatNumber(xaiProvider?.tokens || 0)} tokens · {xaiProvider?.requests || 0} reqs
+            </div>
+            <div className="text-xs text-muted-foreground/80 mt-1">
+              {xaiProvider?.models || 0} model{xaiProvider?.models === 1 ? '' : 's'}
+            </div>
+          </div>
+
+          <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {providerData
+              .filter(provider => provider.provider !== 'xAI')
+              .slice(0, 6)
+              .map(provider => (
+                <div key={provider.provider} className="rounded-lg border border-border/60 bg-secondary/30 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-foreground truncate">{formatProviderName(provider.provider)}</span>
+                    <span
+                      className="inline-flex h-2 w-2 rounded-full"
+                      style={{ backgroundColor: PROVIDER_COLORS[provider.provider] || PROVIDER_COLORS.Other }}
+                    />
+                  </div>
+                  <div className="text-sm font-semibold text-foreground">{formatCost(provider.cost)}</div>
+                  <div className="text-[11px] text-muted-foreground">{formatNumber(provider.tokens)} tokens · {provider.requests} reqs</div>
+                </div>
+              ))}
+          </div>
         </div>
       </div>
 

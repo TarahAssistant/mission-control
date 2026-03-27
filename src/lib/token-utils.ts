@@ -3,7 +3,7 @@ export function detectProvider(model: string): string {
   if (lower.includes('claude') || lower.includes('anthropic')) return 'Anthropic'
   if (lower.includes('gpt') || lower.includes('o1') || lower.includes('o3') || lower.includes('o4') || lower.includes('openai')) return 'OpenAI'
   if (lower.includes('gemini') || lower.includes('google')) return 'Google'
-  if (lower.includes('grok') || lower.includes('xai') || lower.includes('x.ai')) return 'xAI'
+  if (lower.includes('grok') || lower.includes('xai') || lower.includes('x.ai') || lower.includes('x-ai')) return 'xAI'
   if (lower.includes('mistral') || lower.includes('mixtral')) return 'Mistral'
   if (lower.includes('venice')) return 'Venice AI'
   if (lower.includes('llama') || lower.includes('meta')) return 'Meta'
