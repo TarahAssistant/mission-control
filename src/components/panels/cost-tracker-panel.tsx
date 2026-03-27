@@ -328,6 +328,7 @@ function OverviewView({
   onRefresh: () => void
 }) {
   const t = useTranslations('costTracker')
+  const [selectedProvider, setSelectedProvider] = useState<'all' | string>('all')
 
   const providerData = useMemo<ProviderStat[]>(() => {
     if (!stats) return []
@@ -363,6 +364,16 @@ function OverviewView({
       .sort((a, b) => b.cost - a.cost)
   }, [stats])
 
+  const providersWithUsage = useMemo(() => (
+    providerData.filter((provider) => provider.cost > 0 || provider.tokens > 0 || provider.requests > 0)
+  ), [providerData])
+
+  useEffect(() => {
+    if (selectedProvider !== 'all' && !providersWithUsage.some((provider) => provider.provider === selectedProvider)) {
+      setSelectedProvider('all')
+    }
+  }, [providersWithUsage, selectedProvider])
+
   const xaiProvider = providerData.find((provider) => provider.provider === 'xAI')
 
   if (!stats) {
@@ -381,7 +392,12 @@ function OverviewView({
     .map(([model, s]) => ({ name: getModelDisplayName(model), fullName: model, tokens: s.totalTokens, cost: s.totalCost, requests: s.requestCount }))
     .sort((a, b) => b.cost - a.cost)
 
-  const pieData = modelData.slice(0, 6).map(m => ({ name: m.name, value: m.cost }))
+  const chartModelData = selectedProvider === 'all'
+    ? modelData
+    : modelData.filter((model) => detectProvider(model.fullName) === selectedProvider)
+
+  const pieData = chartModelData.slice(0, 6).map(m => ({ name: m.name, value: m.cost }))
+  const chartScopeLabel = selectedProvider === 'all' ? 'All providers' : formatProviderName(selectedProvider)
 
   const trendChartData = (() => {
     if (!trendData?.trends) return []
@@ -441,6 +457,37 @@ function OverviewView({
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <h2 className="text-xl font-semibold">Provider breakdown</h2>
           <span className="text-xs text-muted-foreground">xAI / Grok is tracked as its own provider</span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">Chart focus:</span>
+          <button
+            onClick={() => setSelectedProvider('all')}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+              selectedProvider === 'all'
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border bg-card text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            All providers
+          </button>
+          {providersWithUsage.map((provider) => (
+            <button
+              key={`focus-${provider.provider}`}
+              onClick={() => setSelectedProvider(provider.provider)}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                selectedProvider === provider.provider
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-border bg-card text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <span
+                className="inline-flex h-2 w-2 rounded-full"
+                style={{ backgroundColor: PROVIDER_COLORS[provider.provider] || PROVIDER_COLORS.Other }}
+              />
+              {formatProviderName(provider.provider)}
+            </button>
+          ))}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -515,17 +562,22 @@ function OverviewView({
 
         {/* Model bar chart */}
         <div className="bg-card border border-border rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">{t('tokenUsageByModel')}</h2>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-xl font-semibold">{t('tokenUsageByModel')}</h2>
+            <span className="text-xs text-muted-foreground">Scope: {chartScopeLabel}</span>
+          </div>
           <div className="h-64">
-            {modelData.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">{t('noModelData')}</div>
+            {chartModelData.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+                {selectedProvider === 'all' ? t('noModelData') : `No model data for ${formatProviderName(selectedProvider)} in this timeframe.`}
+              </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={modelData}>
+                <BarChart data={chartModelData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} />
                   <YAxis /><Tooltip formatter={(v, n) => [formatNumber(Number(v)), n]} />
-                  <Bar dataKey="tokens" fill="#8884d8" name="Tokens" />
+                  <Bar dataKey="tokens" fill="#8884d8" name="Tokens" minPointSize={4} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -534,10 +586,15 @@ function OverviewView({
 
         {/* Cost pie */}
         <div className="bg-card border border-border rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">{t('costDistributionByModel')}</h2>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-xl font-semibold">{t('costDistributionByModel')}</h2>
+            <span className="text-xs text-muted-foreground">Scope: {chartScopeLabel}</span>
+          </div>
           <div className="h-64">
             {pieData.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">{t('noCostData')}</div>
+              <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+                {selectedProvider === 'all' ? t('noCostData') : `No cost data for ${formatProviderName(selectedProvider)} in this timeframe.`}
+              </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
