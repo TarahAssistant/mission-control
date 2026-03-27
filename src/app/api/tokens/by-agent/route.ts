@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { getProviderSubscriptionFlags } from '@/lib/provider-subscriptions'
 import { logger } from '@/lib/logger'
-import { extractAgentName, filterByTimeframe, loadTokenData, resolveTimeframeRange } from '@/app/api/tokens/route'
+import {
+  calculatePreferredRequestCount,
+  extractAgentName,
+  filterByTimeframe,
+  loadTokenData,
+  resolveTimeframeRange,
+  type TokenUsageRecord,
+} from '@/app/api/tokens/route'
 
 interface ModelBreakdown {
   model: string
@@ -10,6 +17,16 @@ interface ModelBreakdown {
   output_tokens: number
   request_count: number
   cost: number
+}
+
+type RequestCountRecord = Pick<TokenUsageRecord, 'sessionId' | 'model' | 'operation'>
+
+interface ModelAccumulator {
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cost: number
+  requestRecords: RequestCountRecord[]
 }
 
 interface AgentBreakdown {
@@ -29,10 +46,10 @@ interface AgentAccumulator {
   total_input_tokens: number
   total_output_tokens: number
   total_cost: number
-  request_count: number
   last_active_ts: number
   sessions: Set<string>
-  models: Map<string, ModelBreakdown>
+  requestRecords: RequestCountRecord[]
+  models: Map<string, ModelAccumulator>
 }
 
 /**
@@ -74,6 +91,12 @@ export async function GET(request: NextRequest) {
     const byAgent = new Map<string, AgentAccumulator>()
     for (const record of records) {
       const agentName = record.agentName || extractAgentName(record.sessionId)
+      const requestRecord: RequestCountRecord = {
+        sessionId: record.sessionId,
+        model: record.model,
+        operation: record.operation,
+      }
+
       let agent = byAgent.get(agentName)
       if (!agent) {
         agent = {
@@ -81,9 +104,9 @@ export async function GET(request: NextRequest) {
           total_input_tokens: 0,
           total_output_tokens: 0,
           total_cost: 0,
-          request_count: 0,
           last_active_ts: 0,
           sessions: new Set(),
+          requestRecords: [],
           models: new Map(),
         }
         byAgent.set(agentName, agent)
@@ -92,7 +115,7 @@ export async function GET(request: NextRequest) {
       agent.total_input_tokens += record.inputTokens
       agent.total_output_tokens += record.outputTokens
       agent.total_cost += record.cost
-      agent.request_count += 1
+      agent.requestRecords.push(requestRecord)
       agent.sessions.add(record.sessionId)
       if (record.timestamp > agent.last_active_ts) {
         agent.last_active_ts = record.timestamp
@@ -104,23 +127,32 @@ export async function GET(request: NextRequest) {
           model: record.model,
           input_tokens: 0,
           output_tokens: 0,
-          request_count: 0,
           cost: 0,
+          requestRecords: [],
         }
         agent.models.set(record.model, model)
       }
       model.input_tokens += record.inputTokens
       model.output_tokens += record.outputTokens
-      model.request_count += 1
       model.cost += record.cost
+      model.requestRecords.push(requestRecord)
     }
 
     const agents: AgentBreakdown[] = [...byAgent.values()]
       .map((agent) => {
-        const models = [...agent.models.values()].sort((a, b) => {
-          if (b.cost !== a.cost) return b.cost - a.cost
-          return (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)
-        })
+        const models = [...agent.models.values()]
+          .map((model): ModelBreakdown => ({
+            model: model.model,
+            input_tokens: model.input_tokens,
+            output_tokens: model.output_tokens,
+            request_count: calculatePreferredRequestCount(model.requestRecords),
+            cost: model.cost,
+          }))
+          .sort((a, b) => {
+            if (b.cost !== a.cost) return b.cost - a.cost
+            return (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)
+          })
+
         return {
           agent: agent.agent,
           total_input_tokens: agent.total_input_tokens,
@@ -128,7 +160,7 @@ export async function GET(request: NextRequest) {
           total_tokens: agent.total_input_tokens + agent.total_output_tokens,
           total_cost: agent.total_cost,
           session_count: agent.sessions.size,
-          request_count: agent.request_count,
+          request_count: calculatePreferredRequestCount(agent.requestRecords),
           last_active: new Date(agent.last_active_ts || 0).toISOString(),
           models,
         }

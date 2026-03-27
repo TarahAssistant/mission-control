@@ -68,7 +68,7 @@ interface DbTokenUsageRow {
   created_at: number
 }
 
-interface XAiHistoricalRequestEntry {
+interface HistoricalRequestEntry {
   id: string
   model: string
   sessionId: string
@@ -81,8 +81,18 @@ interface XAiHistoricalRequestEntry {
   cacheWrite: number
 }
 
-const XAI_HISTORICAL_REQUEST_CACHE_TTL_MS = 30_000
-let xaiHistoricalRequestCache: { ts: number; entries: XAiHistoricalRequestEntry[] } | null = null
+type HistoricalProvider = 'xai' | 'anthropic'
+
+interface HistoricalProviderDefinition {
+  idPrefix: string
+  defaultModel: string
+  lineHints: string[]
+  matches: (model: string, provider?: string) => boolean
+}
+
+const HISTORICAL_REQUEST_CACHE_TTL_MS = 30_000
+let xaiHistoricalRequestCache: { ts: number; entries: HistoricalRequestEntry[] } | null = null
+let anthropicHistoricalRequestCache: { ts: number; entries: HistoricalRequestEntry[] } | null = null
 
 function toFiniteNumber(value: unknown): number {
   const parsed = Number(value)
@@ -110,6 +120,31 @@ function isXAiProviderOrModel(model: string, provider?: string): boolean {
     lowerProvider === 'x.ai' ||
     lowerProvider === 'x-ai'
   )
+}
+
+function isAnthropicProviderOrModel(model: string, provider?: string): boolean {
+  const lowerModel = model.toLowerCase()
+  const lowerProvider = (provider || '').toLowerCase()
+  return (
+    lowerModel.includes('claude') ||
+    lowerModel.startsWith('anthropic/') ||
+    lowerProvider === 'anthropic'
+  )
+}
+
+const HISTORICAL_PROVIDER_DEFINITIONS: Record<HistoricalProvider, HistoricalProviderDefinition> = {
+  xai: {
+    idPrefix: 'xai-historical',
+    defaultModel: 'grok-unknown',
+    lineHints: ['grok', '"provider":"xai"', '"provider":"x-ai"', '"provider":"x.ai"'],
+    matches: isXAiProviderOrModel,
+  },
+  anthropic: {
+    idPrefix: 'anthropic-historical',
+    defaultModel: 'claude-unknown',
+    lineHints: ['claude', '"provider":"anthropic"', '"model":"anthropic/'],
+    matches: isAnthropicProviderOrModel,
+  },
 }
 
 function normalizeSessionFileStem(stem: string): string {
@@ -150,15 +185,19 @@ function collectJsonlFiles(dirPath: string): string[] {
   return files
 }
 
-function scanXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
-  const stateDir = config.openclawStateDir
+function scanHistoricalRequestEntries(
+  provider: HistoricalProvider,
+  stateDirOverride?: string,
+): HistoricalRequestEntry[] {
+  const stateDir = stateDirOverride ?? config.openclawStateDir
   if (!stateDir) return []
 
   const agentsDir = path.join(stateDir, 'agents')
   if (!fs.existsSync(agentsDir)) return []
 
+  const definition = HISTORICAL_PROVIDER_DEFINITIONS[provider]
   const files = collectJsonlFiles(agentsDir)
-  const entries: XAiHistoricalRequestEntry[] = []
+  const entries: HistoricalRequestEntry[] = []
   const seen = new Set<string>()
 
   for (const filePath of files) {
@@ -183,12 +222,7 @@ function scanXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
       if (!line || !line.trim()) continue
 
       const lowerLine = line.toLowerCase()
-      if (
-        !lowerLine.includes('grok') &&
-        !lowerLine.includes('"provider":"xai"') &&
-        !lowerLine.includes('"provider":"x-ai"') &&
-        !lowerLine.includes('"provider":"x.ai"')
-      ) {
+      if (definition.lineHints.length > 0 && !definition.lineHints.some((hint) => lowerLine.includes(hint))) {
         continue
       }
 
@@ -204,29 +238,40 @@ function scanXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
       if (message?.role !== 'assistant') continue
 
       const model = String(message?.model || '')
-      const provider = String(message?.provider || '')
-      if (!isXAiProviderOrModel(model, provider)) continue
+      const messageProvider = String(message?.provider || '')
+      if (!definition.matches(model, messageProvider)) continue
 
       const timestamp = parseTimestampMs(message?.timestamp ?? parsed?.timestamp)
       if (timestamp == null) continue
 
       const usage = message?.usage || {}
-      const inputTokens = toFiniteNumber(usage?.input ?? usage?.input_tokens)
-      const outputTokens = toFiniteNumber(usage?.output ?? usage?.output_tokens)
+      const inputTokens = toFiniteNumber(
+        usage?.input ?? usage?.inputTokens ?? usage?.input_tokens ?? usage?.prompt_tokens
+      )
+      const outputTokens = toFiniteNumber(
+        usage?.output ?? usage?.outputTokens ?? usage?.output_tokens ?? usage?.completion_tokens
+      )
       const cacheRead = toFiniteNumber(
-        usage?.cacheRead ?? usage?.cache_read_input_tokens ?? usage?.cache_read?.input_tokens
+        usage?.cacheRead
+          ?? usage?.cacheReadInputTokens
+          ?? usage?.cache_read_input_tokens
+          ?? usage?.cache_read?.input_tokens
       )
       const cacheWrite = toFiniteNumber(
-        usage?.cacheWrite ?? usage?.cache_creation_input_tokens ?? usage?.cache_creation?.input_tokens
+        usage?.cacheWrite
+          ?? usage?.cacheWriteInputTokens
+          ?? usage?.cache_creation_input_tokens
+          ?? usage?.cache_creation?.input_tokens
       )
       const fallbackTotal = inputTokens + outputTokens + cacheRead + cacheWrite
       const totalTokens = Math.max(
         0,
-        toFiniteNumber(usage?.totalTokens ?? usage?.total_tokens) || fallbackTotal,
+        toFiniteNumber(usage?.totalTokens ?? usage?.total_tokens ?? usage?.total) || fallbackTotal,
       )
 
       const rowId = String(message?.id || parsed?.id || `${index}`)
       const dedupeKey = [
+        provider,
         normalizedSessionId,
         model,
         timestamp,
@@ -239,8 +284,8 @@ function scanXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
       seen.add(dedupeKey)
 
       entries.push({
-        id: `xai-historical-${agentName}-${normalizedSessionId}-${rowId}`,
-        model: model || 'grok-unknown',
+        id: `${definition.idPrefix}-${agentName}-${normalizedSessionId}-${rowId}`,
+        model: model || definition.defaultModel,
         sessionId: normalizedSessionId,
         agentName,
         timestamp,
@@ -257,9 +302,17 @@ function scanXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
   return entries
 }
 
-function getCachedXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
+function scanXAiHistoricalRequestEntries(stateDirOverride?: string): HistoricalRequestEntry[] {
+  return scanHistoricalRequestEntries('xai', stateDirOverride)
+}
+
+export function scanAnthropicHistoricalRequestEntries(stateDirOverride?: string): HistoricalRequestEntry[] {
+  return scanHistoricalRequestEntries('anthropic', stateDirOverride)
+}
+
+function getCachedXAiHistoricalRequestEntries(): HistoricalRequestEntry[] {
   const now = Date.now()
-  if (xaiHistoricalRequestCache && now - xaiHistoricalRequestCache.ts < XAI_HISTORICAL_REQUEST_CACHE_TTL_MS) {
+  if (xaiHistoricalRequestCache && now - xaiHistoricalRequestCache.ts < HISTORICAL_REQUEST_CACHE_TTL_MS) {
     return xaiHistoricalRequestCache.entries
   }
 
@@ -268,8 +321,23 @@ function getCachedXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
   return entries
 }
 
-function loadXAiHistoricalRequestData(workspaceId: number, providerSubscriptions: Record<string, boolean>): TokenUsageRecord[] {
-  const entries = getCachedXAiHistoricalRequestEntries()
+function getCachedAnthropicHistoricalRequestEntries(): HistoricalRequestEntry[] {
+  const now = Date.now()
+  if (anthropicHistoricalRequestCache && now - anthropicHistoricalRequestCache.ts < HISTORICAL_REQUEST_CACHE_TTL_MS) {
+    return anthropicHistoricalRequestCache.entries
+  }
+
+  const entries = scanAnthropicHistoricalRequestEntries()
+  anthropicHistoricalRequestCache = { ts: now, entries }
+  return entries
+}
+
+function mapHistoricalEntriesToTokenUsageRecords(
+  entries: HistoricalRequestEntry[],
+  operation: string,
+  workspaceId: number,
+  providerSubscriptions: Record<string, boolean>,
+): TokenUsageRecord[] {
   return entries.map((entry) => ({
     id: entry.id,
     model: entry.model,
@@ -284,10 +352,31 @@ function loadXAiHistoricalRequestData(workspaceId: number, providerSubscriptions
       cacheRead: entry.cacheRead,
       cacheWrite: entry.cacheWrite,
     }),
-    operation: 'xai_historical_request',
+    operation,
     taskId: null,
     workspaceId,
   }))
+}
+
+function loadXAiHistoricalRequestData(workspaceId: number, providerSubscriptions: Record<string, boolean>): TokenUsageRecord[] {
+  return mapHistoricalEntriesToTokenUsageRecords(
+    getCachedXAiHistoricalRequestEntries(),
+    'xai_historical_request',
+    workspaceId,
+    providerSubscriptions,
+  )
+}
+
+function loadAnthropicHistoricalRequestData(
+  workspaceId: number,
+  providerSubscriptions: Record<string, boolean>,
+): TokenUsageRecord[] {
+  return mapHistoricalEntriesToTokenUsageRecords(
+    getCachedAnthropicHistoricalRequestEntries(),
+    'anthropic_historical_request',
+    workspaceId,
+    providerSubscriptions,
+  )
 }
 
 function loadTokenDataFromDb(workspaceId: number, providerSubscriptions: Record<string, boolean>): TokenUsageRecord[] {
@@ -521,25 +610,35 @@ function loadOpenCodeTokenData(workspaceId: number, providerSubscriptions: Recor
 
 /**
  * Load token data from all sources: DB, local ledger file, OpenCode DB,
- * Claude CLI logs, xAI historical session JSONL request records, and live sessions.
+ * Claude CLI logs, xAI + Anthropic historical session JSONL request records,
+ * and live sessions.
  */
 export async function loadTokenData(workspaceId: number, providerSubscriptions: Record<string, boolean>): Promise<TokenUsageRecord[]> {
-  const [dbRecords, fileRecords, opencodeRecords, claudecodeRecords, xaiHistoricalRequestRecords] = await Promise.all([
+  const [
+    dbRecords,
+    fileRecords,
+    opencodeRecords,
+    claudecodeRecords,
+    xaiHistoricalRequestRecords,
+    anthropicHistoricalRequestRecords,
+  ] = await Promise.all([
     loadTokenDataFromDb(workspaceId, providerSubscriptions),
     loadTokenDataFromFile(workspaceId, providerSubscriptions),
     loadOpenCodeTokenData(workspaceId, providerSubscriptions),
     loadClaudeCodeTokenData(workspaceId, providerSubscriptions),
     Promise.resolve(loadXAiHistoricalRequestData(workspaceId, providerSubscriptions)),
+    Promise.resolve(loadAnthropicHistoricalRequestData(workspaceId, providerSubscriptions)),
   ])
-  
+
   const sessionRecords = deriveFromSessions(workspaceId, providerSubscriptions)
-  
+
   const combined = dedupeTokenRecords([
     ...dbRecords,
     ...fileRecords,
     ...opencodeRecords,
     ...claudecodeRecords,
     ...xaiHistoricalRequestRecords,
+    ...anthropicHistoricalRequestRecords,
     ...sessionRecords,
   ]).sort((a, b) => b.timestamp - a.timestamp)
 
@@ -646,6 +745,42 @@ function isSessionSnapshotOperation(operation: string | undefined): boolean {
   return typeof operation === 'string' && operation.startsWith('session_snapshot')
 }
 
+interface RequestCountBucket {
+  nonSnapshotRequests: number
+  snapshotSamples: number
+}
+
+function preferredRequestCountForBucket(bucket: RequestCountBucket): number {
+  return bucket.nonSnapshotRequests > 0 ? bucket.nonSnapshotRequests : bucket.snapshotSamples
+}
+
+/**
+ * Count requests with session snapshots as fallback.
+ *
+ * For each session+model pair:
+ * - use true per-request rows when present
+ * - otherwise fall back to snapshot samples
+ */
+export function calculatePreferredRequestCount(
+  records: Array<Pick<TokenUsageRecord, 'sessionId' | 'model' | 'operation'>>,
+): number {
+  const bySessionModel = new Map<string, RequestCountBucket>()
+
+  for (const record of records) {
+    const key = `${record.sessionId}::${record.model}`
+    const bucket = bySessionModel.get(key) || { nonSnapshotRequests: 0, snapshotSamples: 0 }
+    if (isSessionSnapshotOperation(record.operation)) bucket.snapshotSamples += 1
+    else bucket.nonSnapshotRequests += 1
+    bySessionModel.set(key, bucket)
+  }
+
+  let requestCount = 0
+  for (const bucket of bySessionModel.values()) {
+    requestCount += preferredRequestCountForBucket(bucket)
+  }
+  return requestCount
+}
+
 export function calculateStats(records: TokenUsageRecord[]): TokenStats {
   if (records.length === 0) {
     return {
@@ -659,9 +794,7 @@ export function calculateStats(records: TokenUsageRecord[]): TokenStats {
 
   const totalTokens = records.reduce((sum, r) => sum + r.totalTokens, 0)
   const totalCost = records.reduce((sum, r) => sum + r.cost, 0)
-
-  const nonSnapshotRequests = records.filter((record) => !isSessionSnapshotOperation(record.operation)).length
-  const requestCount = nonSnapshotRequests > 0 ? nonSnapshotRequests : records.length
+  const requestCount = calculatePreferredRequestCount(records)
 
   return {
     totalTokens,

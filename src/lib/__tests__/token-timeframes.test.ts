@@ -77,4 +77,35 @@ describe('request counting with snapshot data', () => {
     expect(stats.totalTokens).toBe(450)
     expect(stats.avgTokensPerRequest).toBe(225)
   })
+
+  it('uses snapshot fallback only for session/model groups without historical request rows', () => {
+    const records: TokenUsageRecord[] = [
+      {
+        ...makeRecord(Date.parse('2026-03-20T10:00:00.000Z'), 'session_snapshot'),
+        model: 'claude-sonnet-4',
+        sessionId: 'anthropic-session',
+      },
+      {
+        ...makeRecord(Date.parse('2026-03-20T10:05:00.000Z'), 'anthropic_historical_request'),
+        model: 'claude-sonnet-4',
+        sessionId: 'anthropic-session',
+      },
+      {
+        ...makeRecord(Date.parse('2026-03-20T10:10:00.000Z'), 'anthropic_historical_request'),
+        model: 'claude-sonnet-4',
+        sessionId: 'anthropic-session',
+      },
+      {
+        ...makeRecord(Date.parse('2026-03-20T11:00:00.000Z'), 'session_snapshot'),
+        model: 'gpt-4o-mini',
+        sessionId: 'snapshot-only-session',
+      },
+    ]
+
+    const stats = calculateStats(records)
+
+    expect(stats.requestCount).toBe(3)
+    expect(stats.totalTokens).toBe(600)
+    expect(stats.avgTokensPerRequest).toBe(200)
+  })
 })
