@@ -32,9 +32,11 @@ const navGroups: NavGroup[] = [
       { id: 'agents', label: 'Agents', icon: <AgentsIcon />, priority: true, essential: true },
       { id: 'tasks', label: 'Tasks', icon: <TasksIcon />, priority: true, essential: true },
       { id: 'chat', label: 'Chat', icon: <ChatIcon />, priority: false, essential: true },
+      { id: 'sessions', label: 'Sessions', icon: <SessionsIcon />, priority: false },
       { id: 'channels', label: 'Channels', icon: <ChannelsIcon />, priority: false },
       { id: 'skills', label: 'Skills', icon: <SkillsIcon />, priority: false },
       { id: 'memory', label: 'Memory', icon: <MemoryIcon />, priority: false },
+      { id: 'documents', label: 'Documents', icon: <DocumentsIcon />, priority: false },
     ],
   },
   {
@@ -1247,6 +1249,16 @@ function SessionsIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M2 3h12v9H2zM5 12v2M11 12v2M4 14h8" />
+    </svg>
+  )
+}
+
+function DocumentsIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 1.5h5l3 3V14a.5.5 0 0 1-.5.5h-7A.5.5 0 0 1 4 14z" />
+      <path d="M9 1.5V5h3" />
+      <path d="M6 8h4M6 10h4M6 12h3" />
     </svg>
   )
 }

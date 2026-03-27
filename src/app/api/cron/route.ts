@@ -38,6 +38,7 @@ interface OpenClawCronJob {
     kind: string
     expr: string
     tz?: string
+    staggerMs?: number
   }
   sessionTarget?: string
   wakeMode?: string
@@ -389,6 +390,72 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (action === 'update') {
+      const id = jobId || jobName
+      if (!id) {
+        return NextResponse.json({ error: 'Job ID or name required' }, { status: 400 })
+      }
+
+      const schedulerTask = getSchedulerStatus().find(t => t.id === id || t.name === id)
+      if (schedulerTask) {
+        return NextResponse.json({ error: 'Cannot edit built-in scheduler tasks' }, { status: 403 })
+      }
+
+      const cronFile = await loadCronFile()
+      if (!cronFile) {
+        return NextResponse.json({ error: 'Cron file not found' }, { status: 404 })
+      }
+
+      const job = cronFile.jobs.find(j => j.id === id || j.name === id)
+      if (!job) {
+        return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+      }
+
+      const { schedule, command, model, staggerSeconds } = body
+      const requestedName = typeof body.jobName === 'string' ? body.jobName.trim() : ''
+
+      if (requestedName && requestedName !== job.name) {
+        const duplicate = cronFile.jobs.find(j => j !== job && j.name === requestedName)
+        if (duplicate) {
+          return NextResponse.json({ error: 'A job with that name already exists' }, { status: 409 })
+        }
+        job.name = requestedName
+      }
+
+      if (typeof schedule === 'string' && schedule.trim()) {
+        job.schedule.expr = schedule.trim()
+      }
+
+      if (typeof command === 'string' && command.trim()) {
+        job.payload.message = command
+      }
+
+      if (model !== undefined) {
+        const trimmedModel = typeof model === 'string' ? model.trim() : ''
+        if (trimmedModel) {
+          job.payload.model = trimmedModel
+        } else {
+          delete job.payload.model
+        }
+      }
+
+      if (typeof staggerSeconds === 'number' && Number.isFinite(staggerSeconds)) {
+        if (staggerSeconds > 0) {
+          job.schedule.staggerMs = staggerSeconds * 1000
+        } else {
+          delete job.schedule.staggerMs
+        }
+      }
+
+      job.updatedAtMs = Date.now()
+
+      if (!(await saveCronFile(cronFile))) {
+        return NextResponse.json({ error: 'Failed to save cron file' }, { status: 500 })
+      }
+
+      return NextResponse.json({ success: true, job: mapOpenClawJob(job) })
+    }
+
     if (action === 'remove') {
       const id = jobId || jobName
       if (!id) {
@@ -445,7 +512,7 @@ export async function POST(request: NextRequest) {
           kind: 'cron',
           expr: schedule,
           ...(typeof staggerSeconds === 'number' && staggerSeconds > 0
-            ? { staggerMs: staggerSeconds * 1000 } as any
+            ? { staggerMs: staggerSeconds * 1000 }
             : {}),
         },
         payload: {

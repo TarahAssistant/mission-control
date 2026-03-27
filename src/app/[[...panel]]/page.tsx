@@ -37,6 +37,8 @@ import { SecurityAuditPanel } from '@/components/panels/security-audit-panel'
 import { NodesPanel } from '@/components/panels/nodes-panel'
 import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
 import { ChatPagePanel } from '@/components/panels/chat-page-panel'
+import { SessionDetailsPanel } from '@/components/panels/session-details-panel'
+import { DocumentsPanel } from '@/components/panels/documents-panel'
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { getPluginPanel } from '@/lib/plugins'
 import { shouldRedirectDashboardToHttps } from '@/lib/browser-security'
@@ -93,7 +95,6 @@ export default function Home() {
   // Sync URL → Zustand activeTab
   const pathname = usePathname()
   const panelFromUrl = pathname === '/' ? 'overview' : pathname.slice(1)
-  const normalizedPanel = panelFromUrl === 'sessions' ? 'chat' : panelFromUrl
 
   useEffect(() => {
     completeNavigationTiming(pathname)
@@ -104,14 +105,11 @@ export default function Home() {
   }, [activeTab])
 
   useEffect(() => {
-    setActiveTab(normalizedPanel)
-    if (normalizedPanel === 'chat') {
+    setActiveTab(panelFromUrl)
+    if (panelFromUrl === 'chat' || panelFromUrl === 'sessions') {
       setChatPanelOpen(false)
     }
-    if (panelFromUrl === 'sessions') {
-      router.replace('/chat')
-    }
-  }, [panelFromUrl, normalizedPanel, router, setActiveTab, setChatPanelOpen])
+  }, [panelFromUrl, setActiveTab, setChatPanelOpen])
 
   // Connect to SSE for real-time local DB events (tasks, agents, chat, etc.)
   useServerEvents()
@@ -519,13 +517,15 @@ function ContentRouter({ tab }: { tab: string }) {
     case 'standup':
       return <StandupPanel />
     case 'sessions':
-      return <ChatPagePanel />
+      return <SessionDetailsPanel />
     case 'logs':
       return <LogViewerPanel />
     case 'cron':
       return <CronManagementPanel />
     case 'memory':
       return <MemoryBrowserPanel />
+    case 'documents':
+      return <DocumentsPanel />
     case 'cost-tracker':
     case 'tokens':
       return <TokenDashboardPanel />

@@ -41,6 +41,15 @@ interface NewJobForm {
   staggerSeconds: string
 }
 
+const EMPTY_JOB_FORM: NewJobForm = {
+  name: '',
+  schedule: '0 * * * *',
+  command: '',
+  description: '',
+  model: '',
+  staggerSeconds: '',
+}
+
 interface FormErrors {
   name?: string
   schedule?: string
@@ -105,6 +114,7 @@ export function CronManagementPanel() {
   const isLocalMode = dashboardMode === 'local'
   const [isLoading, setIsLoading] = useState(false)
   const [showAddForm, setShowAddForm] = useState(false)
+  const [editingJobId, setEditingJobId] = useState<string | null>(null)
   const [selectedJob, setSelectedJob] = useState<CronJob | null>(null)
   const [jobLogs, setJobLogs] = useState<any[]>([])
   const [availableModels, setAvailableModels] = useState<string[]>([])
@@ -125,14 +135,7 @@ export function CronManagementPanel() {
   const [runHistoryQuery, setRunHistoryQuery] = useState('')
   const [showRunHistory, setShowRunHistory] = useState(false)
   const [runDropdownJobId, setRunDropdownJobId] = useState<string | null>(null)
-  const [newJob, setNewJob] = useState<NewJobForm>({
-    name: '',
-    schedule: '0 * * * *',
-    command: '',
-    description: '',
-    model: '',
-    staggerSeconds: '',
-  })
+  const [newJob, setNewJob] = useState<NewJobForm>({ ...EMPTY_JOB_FORM })
 
   const formatRelativeTime = (timestamp: string | number, future = false) => {
     const now = new Date().getTime()
@@ -242,6 +245,38 @@ export function CronManagementPanel() {
     }
     return errors
   }, [availableModels])
+
+  const closeJobForm = () => {
+    setShowAddForm(false)
+    setEditingJobId(null)
+    setFormErrors({})
+    setNewJob({ ...EMPTY_JOB_FORM })
+  }
+
+  const openAddJobForm = () => {
+    setEditingJobId(null)
+    setFormErrors({})
+    setNewJob({ ...EMPTY_JOB_FORM })
+    setShowAddForm(true)
+  }
+
+  const openEditJobForm = (job: CronJob) => {
+    if (job.delivery === 'local' && job.agentId === 'mission-control-local') {
+      return
+    }
+
+    setEditingJobId(job.id || job.name)
+    setFormErrors({})
+    setNewJob({
+      name: job.name,
+      schedule: (job.schedule || '').replace(/\s*\([^)]+\)\s*$/, '').trim(),
+      command: job.command,
+      description: '',
+      model: job.model || '',
+      staggerSeconds: '',
+    })
+    setShowAddForm(true)
+  }
 
   const cloneJob = async (job: CronJob) => {
     try {
@@ -411,10 +446,13 @@ export function CronManagementPanel() {
     }
   }
 
-  const addJob = async () => {
+  const saveJob = async () => {
     const errors = validateForm(newJob)
     setFormErrors(errors)
     if (Object.keys(errors).length > 0) return
+
+    const isEditing = !!editingJobId
+    const actionLabel = isEditing ? 'update' : 'add'
 
     try {
       const staggerVal = newJob.staggerSeconds.trim() ? Number(newJob.staggerSeconds) : undefined
@@ -422,33 +460,30 @@ export function CronManagementPanel() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'add',
+          action: isEditing ? 'update' : 'add',
+          ...(isEditing ? { jobId: editingJobId } : {}),
           jobName: newJob.name,
           schedule: newJob.schedule,
           command: newJob.command,
-          ...(newJob.model.trim() ? { model: newJob.model.trim() } : {}),
+          ...(isEditing
+            ? { model: newJob.model }
+            : (newJob.model.trim() ? { model: newJob.model.trim() } : {})),
           ...(staggerVal && staggerVal > 0 ? { staggerSeconds: staggerVal } : {}),
         })
       })
 
       if (response.ok) {
-        setNewJob({
-          name: '',
-          schedule: '0 * * * *',
-          command: '',
-          description: '',
-          model: '',
-          staggerSeconds: '',
-        })
-        setFormErrors({})
-        setShowAddForm(false)
+        closeJobForm()
         await loadCronJobs()
+        if (isEditing) {
+          setSelectedJob(null)
+        }
       } else {
         const error = await response.json()
-        alert(`Failed to add job: ${error.error}`)
+        alert(`Failed to ${actionLabel} job: ${error.error}`)
       }
     } catch (error) {
-      log.error('Failed to add job:', error)
+      log.error(`Failed to ${actionLabel} job:`, error)
       alert('Network error occurred')
     }
   }
@@ -700,7 +735,7 @@ export function CronManagementPanel() {
               {isLoading ? t('loading') : t('refresh')}
             </Button>
             <Button
-              onClick={() => setShowAddForm(true)}
+              onClick={openAddJobForm}
             >
               {t('addJob')}
             </Button>
@@ -1137,6 +1172,15 @@ export function CronManagementPanel() {
                               )}
                             </div>
                             <Button
+                              onClick={(e) => { e.stopPropagation(); openEditJobForm(job) }}
+                              disabled={isLocalAutomation}
+                              size="xs"
+                              variant="outline"
+                              className="text-[10px] h-6 px-1.5"
+                            >
+                              Edit
+                            </Button>
+                            <Button
                               onClick={(e) => { e.stopPropagation(); cloneJob(job) }}
                               disabled={isLocalAutomation}
                               size="xs"
@@ -1275,6 +1319,14 @@ export function CronManagementPanel() {
                     {selectedJob.enabled ? t('disable') : t('enable')}
                   </Button>
                   <Button
+                    onClick={() => openEditJobForm(selectedJob)}
+                    disabled={selectedJob.delivery === 'local' && selectedJob.agentId === 'mission-control-local'}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Edit
+                  </Button>
+                  <Button
                     onClick={() => cloneJob(selectedJob)}
                     disabled={selectedJob.delivery === 'local' && selectedJob.agentId === 'mission-control-local'}
                     size="sm"
@@ -1408,7 +1460,7 @@ export function CronManagementPanel() {
       {showAddForm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-card border border-border rounded-lg p-6 w-full max-w-2xl m-4">
-            <h2 className="text-xl font-semibold mb-4">{t('addNewCronJob')}</h2>
+            <h2 className="text-xl font-semibold mb-4">{editingJobId ? 'Edit Cron Job' : t('addNewCronJob')}</h2>
             
             <div className="space-y-4">
               <div>
@@ -1418,7 +1470,8 @@ export function CronManagementPanel() {
                   value={newJob.name}
                   onChange={(e) => setNewJob(prev => ({ ...prev, name: e.target.value }))}
                   placeholder="e.g., daily-backup, system-check"
-                  className={`w-full px-3 py-2 border rounded-md bg-background text-foreground ${formErrors.name ? 'border-red-500' : 'border-border'}`}
+                  disabled={!!editingJobId}
+                  className={`w-full px-3 py-2 border rounded-md bg-background text-foreground ${formErrors.name ? 'border-red-500' : 'border-border'} ${editingJobId ? 'opacity-70 cursor-not-allowed' : ''}`}
                 />
                 {formErrors.name && <div className="mt-1 text-xs text-red-400">{formErrors.name}</div>}
               </div>
@@ -1523,15 +1576,15 @@ export function CronManagementPanel() {
 
             <div className="flex justify-end space-x-3 mt-6">
               <Button
-                onClick={() => setShowAddForm(false)}
+                onClick={closeJobForm}
                 variant="ghost"
               >
                 {t('cancel')}
               </Button>
               <Button
-                onClick={addJob}
+                onClick={saveJob}
               >
-                {t('addJob')}
+                {editingJobId ? 'Save Changes' : t('addJob')}
               </Button>
             </div>
           </div>

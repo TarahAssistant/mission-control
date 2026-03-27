@@ -43,7 +43,7 @@ export function useNavigateToPanel() {
     if (href === pathname) return
     safePrefetch(router, href)
     startNavigationTiming(pathname, href)
-    setActiveTab(panel === 'sessions' ? 'chat' : panel)
+    setActiveTab(panel)
     if (panel === 'chat' || panel === 'sessions') {
       setChatPanelOpen(false)
     }
