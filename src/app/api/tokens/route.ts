@@ -68,6 +68,228 @@ interface DbTokenUsageRow {
   created_at: number
 }
 
+interface XAiHistoricalRequestEntry {
+  id: string
+  model: string
+  sessionId: string
+  agentName: string
+  timestamp: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+const XAI_HISTORICAL_REQUEST_CACHE_TTL_MS = 30_000
+let xaiHistoricalRequestCache: { ts: number; entries: XAiHistoricalRequestEntry[] } | null = null
+
+function toFiniteNumber(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function parseTimestampMs(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Date.parse(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function isXAiProviderOrModel(model: string, provider?: string): boolean {
+  const lowerModel = model.toLowerCase()
+  const lowerProvider = (provider || '').toLowerCase()
+  return (
+    lowerModel.includes('grok') ||
+    lowerModel.includes('xai') ||
+    lowerModel.includes('x.ai') ||
+    lowerModel.includes('x-ai') ||
+    lowerProvider === 'xai' ||
+    lowerProvider === 'x.ai' ||
+    lowerProvider === 'x-ai'
+  )
+}
+
+function normalizeSessionFileStem(stem: string): string {
+  const normalized = stem
+    .split(/[\\/]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .pop() || stem
+  return normalized.replace(/\.jsonl$/i, '')
+}
+
+function collectJsonlFiles(dirPath: string): string[] {
+  const files: string[] = []
+  const stack: string[] = [dirPath]
+
+  while (stack.length > 0) {
+    const current = stack.pop() as string
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(fullPath)
+        continue
+      }
+      if (!entry.isFile()) continue
+      if (!entry.name.endsWith('.jsonl')) continue
+      if (entry.name.startsWith('._')) continue
+      files.push(fullPath)
+    }
+  }
+
+  return files
+}
+
+function scanXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
+  const stateDir = config.openclawStateDir
+  if (!stateDir) return []
+
+  const agentsDir = path.join(stateDir, 'agents')
+  if (!fs.existsSync(agentsDir)) return []
+
+  const files = collectJsonlFiles(agentsDir)
+  const entries: XAiHistoricalRequestEntry[] = []
+  const seen = new Set<string>()
+
+  for (const filePath of files) {
+    const relative = path.relative(agentsDir, filePath)
+    const pathParts = relative.split(path.sep)
+    const agentName = pathParts[0] || 'unknown'
+
+    const stem = path.basename(filePath, '.jsonl')
+    const normalizedSessionId = normalizeSessionFileStem(stem)
+    if (!normalizedSessionId) continue
+
+    let content = ''
+    try {
+      content = fs.readFileSync(filePath, 'utf8')
+    } catch {
+      continue
+    }
+
+    const lines = content.split('\n')
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]
+      if (!line || !line.trim()) continue
+
+      const lowerLine = line.toLowerCase()
+      if (
+        !lowerLine.includes('grok') &&
+        !lowerLine.includes('"provider":"xai"') &&
+        !lowerLine.includes('"provider":"x-ai"') &&
+        !lowerLine.includes('"provider":"x.ai"')
+      ) {
+        continue
+      }
+
+      let parsed: any
+      try {
+        parsed = JSON.parse(line)
+      } catch {
+        continue
+      }
+
+      if (parsed?.type !== 'message') continue
+      const message = parsed?.message
+      if (message?.role !== 'assistant') continue
+
+      const model = String(message?.model || '')
+      const provider = String(message?.provider || '')
+      if (!isXAiProviderOrModel(model, provider)) continue
+
+      const timestamp = parseTimestampMs(message?.timestamp ?? parsed?.timestamp)
+      if (timestamp == null) continue
+
+      const usage = message?.usage || {}
+      const inputTokens = toFiniteNumber(usage?.input ?? usage?.input_tokens)
+      const outputTokens = toFiniteNumber(usage?.output ?? usage?.output_tokens)
+      const cacheRead = toFiniteNumber(
+        usage?.cacheRead ?? usage?.cache_read_input_tokens ?? usage?.cache_read?.input_tokens
+      )
+      const cacheWrite = toFiniteNumber(
+        usage?.cacheWrite ?? usage?.cache_creation_input_tokens ?? usage?.cache_creation?.input_tokens
+      )
+      const fallbackTotal = inputTokens + outputTokens + cacheRead + cacheWrite
+      const totalTokens = Math.max(
+        0,
+        toFiniteNumber(usage?.totalTokens ?? usage?.total_tokens) || fallbackTotal,
+      )
+
+      const rowId = String(message?.id || parsed?.id || `${index}`)
+      const dedupeKey = [
+        normalizedSessionId,
+        model,
+        timestamp,
+        rowId,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+      ].join('|')
+      if (seen.has(dedupeKey)) continue
+      seen.add(dedupeKey)
+
+      entries.push({
+        id: `xai-historical-${agentName}-${normalizedSessionId}-${rowId}`,
+        model: model || 'grok-unknown',
+        sessionId: normalizedSessionId,
+        agentName,
+        timestamp,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        cacheRead,
+        cacheWrite,
+      })
+    }
+  }
+
+  entries.sort((a, b) => b.timestamp - a.timestamp)
+  return entries
+}
+
+function getCachedXAiHistoricalRequestEntries(): XAiHistoricalRequestEntry[] {
+  const now = Date.now()
+  if (xaiHistoricalRequestCache && now - xaiHistoricalRequestCache.ts < XAI_HISTORICAL_REQUEST_CACHE_TTL_MS) {
+    return xaiHistoricalRequestCache.entries
+  }
+
+  const entries = scanXAiHistoricalRequestEntries()
+  xaiHistoricalRequestCache = { ts: now, entries }
+  return entries
+}
+
+function loadXAiHistoricalRequestData(workspaceId: number, providerSubscriptions: Record<string, boolean>): TokenUsageRecord[] {
+  const entries = getCachedXAiHistoricalRequestEntries()
+  return entries.map((entry) => ({
+    id: entry.id,
+    model: entry.model,
+    sessionId: entry.sessionId,
+    agentName: entry.agentName,
+    timestamp: entry.timestamp,
+    inputTokens: entry.inputTokens,
+    outputTokens: entry.outputTokens,
+    totalTokens: entry.totalTokens,
+    cost: calculateTokenCost(entry.model, entry.inputTokens, entry.outputTokens, {
+      providerSubscriptions,
+      cacheRead: entry.cacheRead,
+      cacheWrite: entry.cacheWrite,
+    }),
+    operation: 'xai_historical_request',
+    taskId: null,
+    workspaceId,
+  }))
+}
+
 function loadTokenDataFromDb(workspaceId: number, providerSubscriptions: Record<string, boolean>): TokenUsageRecord[] {
   try {
     const db = getDatabase()
@@ -298,24 +520,27 @@ function loadOpenCodeTokenData(workspaceId: number, providerSubscriptions: Recor
 }
 
 /**
- * Load token data from all sources: DB, local ledger file, OpenCode DB, Claude CLI logs, and live sessions.
+ * Load token data from all sources: DB, local ledger file, OpenCode DB,
+ * Claude CLI logs, xAI historical session JSONL request records, and live sessions.
  */
 export async function loadTokenData(workspaceId: number, providerSubscriptions: Record<string, boolean>): Promise<TokenUsageRecord[]> {
-  const [dbRecords, fileRecords, opencodeRecords, claudecodeRecords] = await Promise.all([
+  const [dbRecords, fileRecords, opencodeRecords, claudecodeRecords, xaiHistoricalRequestRecords] = await Promise.all([
     loadTokenDataFromDb(workspaceId, providerSubscriptions),
     loadTokenDataFromFile(workspaceId, providerSubscriptions),
     loadOpenCodeTokenData(workspaceId, providerSubscriptions),
-    loadClaudeCodeTokenData(workspaceId, providerSubscriptions)
+    loadClaudeCodeTokenData(workspaceId, providerSubscriptions),
+    Promise.resolve(loadXAiHistoricalRequestData(workspaceId, providerSubscriptions)),
   ])
   
   const sessionRecords = deriveFromSessions(workspaceId, providerSubscriptions)
   
   const combined = dedupeTokenRecords([
-    ...dbRecords, 
-    ...fileRecords, 
-    ...opencodeRecords, 
+    ...dbRecords,
+    ...fileRecords,
+    ...opencodeRecords,
     ...claudecodeRecords,
-    ...sessionRecords
+    ...xaiHistoricalRequestRecords,
+    ...sessionRecords,
   ]).sort((a, b) => b.timestamp - a.timestamp)
 
   return combined
@@ -395,14 +620,14 @@ function deriveFromSessions(workspaceId: number, providerSubscriptions: Record<s
     records.push({
       id: `session-${session.agent}-${session.key}`,
       model: modelName,
-      sessionId: `${session.agent}:${session.chatType}`,
+      sessionId: session.sessionId || session.key || `${session.agent}:${session.chatType}`,
       agentName: session.agent || 'unknown',
       timestamp: session.updatedAt,
       inputTokens: effectiveInput,
       outputTokens: effectiveOutput,
       totalTokens,
       cost,
-      operation: session.chatType || 'chat',
+      operation: 'session_snapshot',
       taskId: null,
       workspaceId,
     })
@@ -415,6 +640,10 @@ function deriveFromSessions(workspaceId: number, providerSubscriptions: Record<s
 async function saveTokenData(data: TokenUsageRecord[]): Promise<void> {
   ensureDirExists(dirname(DATA_PATH))
   await writeFile(DATA_PATH, JSON.stringify(data, null, 2))
+}
+
+function isSessionSnapshotOperation(operation: string | undefined): boolean {
+  return typeof operation === 'string' && operation.startsWith('session_snapshot')
 }
 
 export function calculateStats(records: TokenUsageRecord[]): TokenStats {
@@ -430,40 +659,67 @@ export function calculateStats(records: TokenUsageRecord[]): TokenStats {
 
   const totalTokens = records.reduce((sum, r) => sum + r.totalTokens, 0)
   const totalCost = records.reduce((sum, r) => sum + r.cost, 0)
-  const requestCount = records.length
+
+  const nonSnapshotRequests = records.filter((record) => !isSessionSnapshotOperation(record.operation)).length
+  const requestCount = nonSnapshotRequests > 0 ? nonSnapshotRequests : records.length
 
   return {
     totalTokens,
     totalCost,
     requestCount,
-    avgTokensPerRequest: Math.round(totalTokens / requestCount),
-    avgCostPerRequest: totalCost / requestCount,
+    avgTokensPerRequest: requestCount > 0 ? Math.round(totalTokens / requestCount) : 0,
+    avgCostPerRequest: requestCount > 0 ? totalCost / requestCount : 0,
+  }
+}
+
+export function resolveTimeframeRange(
+  timeframe: string,
+  nowMs = Date.now(),
+): { startMs: number; endMs?: number } | null {
+  const normalized = timeframe.trim().toLowerCase()
+  const nowDate = new Date(nowMs)
+
+  switch (normalized) {
+    case 'hour':
+      return { startMs: nowMs - 60 * 60 * 1000 }
+    case 'day':
+      return { startMs: nowMs - 24 * 60 * 60 * 1000 }
+    case 'week':
+      return { startMs: nowMs - 7 * 24 * 60 * 60 * 1000 }
+    case 'month':
+    case 'rolling30d':
+    case 'rolling_30d':
+    case 'last30d':
+    case 'last_30d':
+      return { startMs: nowMs - 30 * 24 * 60 * 60 * 1000 }
+    case 'this_month':
+    case 'current_month': {
+      const startCurrentMonth = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1)
+      return { startMs: startCurrentMonth }
+    }
+    case 'previous_month':
+    case 'prev_month':
+    case 'previous-month':
+    case 'last_month': {
+      const startCurrentMonth = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1)
+      const startPreviousMonth = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth() - 1, 1)
+      return { startMs: startPreviousMonth, endMs: startCurrentMonth }
+    }
+    case 'all':
+    default:
+      return null
   }
 }
 
 export function filterByTimeframe(records: TokenUsageRecord[], timeframe: string): TokenUsageRecord[] {
-  const now = Date.now()
-  let cutoffTime: number
+  const range = resolveTimeframeRange(timeframe)
+  if (!range) return records
 
-  switch (timeframe) {
-    case 'hour':
-      cutoffTime = now - 60 * 60 * 1000
-      break
-    case 'day':
-      cutoffTime = now - 24 * 60 * 60 * 1000
-      break
-    case 'week':
-      cutoffTime = now - 7 * 24 * 60 * 60 * 1000
-      break
-    case 'month':
-      cutoffTime = now - 30 * 24 * 60 * 60 * 1000
-      break
-    case 'all':
-    default:
-      return records
-  }
-
-  return records.filter(record => record.timestamp >= cutoffTime)
+  return records.filter((record) => {
+    if (record.timestamp < range.startMs) return false
+    if (range.endMs != null && record.timestamp >= range.endMs) return false
+    return true
+  })
 }
 
 interface SessionCostEntry {
@@ -486,7 +742,8 @@ export function buildSessionCostEntries(records: TokenUsageRecord[]): SessionCos
     inputTokens: number
     outputTokens: number
     totalCost: number
-    requestCount: number
+    nonSnapshotRequests: number
+    snapshotSamples: number
     firstSeenTs: number
     lastSeenTs: number
   }>()
@@ -494,12 +751,14 @@ export function buildSessionCostEntries(records: TokenUsageRecord[]): SessionCos
   for (const record of records) {
     const key = `${record.sessionId}::${record.model}`
     const existing = bySessionModel.get(key)
+    const isSnapshot = isSessionSnapshotOperation(record.operation)
     if (existing) {
       existing.totalTokens += record.totalTokens
       existing.inputTokens += record.inputTokens
       existing.outputTokens += record.outputTokens
       existing.totalCost += record.cost
-      existing.requestCount += 1
+      if (isSnapshot) existing.snapshotSamples += 1
+      else existing.nonSnapshotRequests += 1
       if (record.timestamp < existing.firstSeenTs) existing.firstSeenTs = record.timestamp
       if (record.timestamp > existing.lastSeenTs) existing.lastSeenTs = record.timestamp
       continue
@@ -512,7 +771,8 @@ export function buildSessionCostEntries(records: TokenUsageRecord[]): SessionCos
       inputTokens: record.inputTokens,
       outputTokens: record.outputTokens,
       totalCost: record.cost,
-      requestCount: 1,
+      nonSnapshotRequests: isSnapshot ? 0 : 1,
+      snapshotSamples: isSnapshot ? 1 : 0,
       firstSeenTs: record.timestamp,
       lastSeenTs: record.timestamp,
     })
@@ -526,7 +786,7 @@ export function buildSessionCostEntries(records: TokenUsageRecord[]): SessionCos
       inputTokens: entry.inputTokens,
       outputTokens: entry.outputTokens,
       totalCost: entry.totalCost,
-      requestCount: entry.requestCount,
+      requestCount: entry.nonSnapshotRequests > 0 ? entry.nonSnapshotRequests : entry.snapshotSamples,
       firstSeen: new Date(entry.firstSeenTs).toISOString(),
       lastSeen: new Date(entry.lastSeenTs).toISOString(),
     }))

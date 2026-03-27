@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { getProviderSubscriptionFlags } from '@/lib/provider-subscriptions'
 import { logger } from '@/lib/logger'
-import { extractAgentName, loadTokenData } from '@/app/api/tokens/route'
+import { extractAgentName, filterByTimeframe, loadTokenData, resolveTimeframeRange } from '@/app/api/tokens/route'
 
 interface ModelBreakdown {
   model: string
@@ -38,7 +38,8 @@ interface AgentAccumulator {
 /**
  * GET /api/tokens/by-agent - Per-agent cost breakdown from all token sources
  * Query params:
- *   days=N  - Time window in days (default 30)
+ *   timeframe=<key> - Named timeframe (hour, day, week, month/rolling30d, previous_month)
+ *   days=N  - Time window in days (default 30, used when timeframe is omitted)
  *   ignoreSubscriptions=true - do not zero-out subscribed provider costs
  */
 export async function GET(request: NextRequest) {
@@ -47,14 +48,28 @@ export async function GET(request: NextRequest) {
 
   try {
     const { searchParams } = new URL(request.url)
+    const timeframe = (searchParams.get('timeframe') || '').trim().toLowerCase()
     const days = Math.max(1, Math.min(365, Number(searchParams.get('days') || 30)))
     const ignoreSubscriptions = searchParams.get('ignoreSubscriptions') === 'true'
     const workspaceId = auth.user.workspace_id ?? 1
 
-    const cutoffMs = Date.now() - days * 86_400_000
     const providerSubscriptions = ignoreSubscriptions ? {} : getProviderSubscriptionFlags()
     const allRecords = await loadTokenData(workspaceId, providerSubscriptions)
-    const records = allRecords.filter((record) => record.timestamp >= cutoffMs)
+
+    let records = allRecords
+    let effectiveDays = days
+
+    if (timeframe) {
+      records = filterByTimeframe(allRecords, timeframe)
+      const range = resolveTimeframeRange(timeframe)
+      if (range) {
+        const endMs = range.endMs ?? Date.now()
+        effectiveDays = Math.max(1, Math.ceil((endMs - range.startMs) / 86_400_000))
+      }
+    } else {
+      const cutoffMs = Date.now() - days * 86_400_000
+      records = allRecords.filter((record) => record.timestamp >= cutoffMs)
+    }
 
     const byAgent = new Map<string, AgentAccumulator>()
     for (const record of records) {
@@ -132,7 +147,7 @@ export async function GET(request: NextRequest) {
         total_cost: totalCost,
         total_tokens: totalTokens,
         agent_count: agents.length,
-        days,
+        days: effectiveDays,
       },
     })
   } catch (error) {

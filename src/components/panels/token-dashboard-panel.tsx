@@ -31,6 +31,7 @@ interface TrendData {
 }
 
 type DashboardView = 'overview' | 'sessions'
+type Timeframe = 'hour' | 'day' | 'week' | 'month' | 'previous_month'
 
 interface SessionCostEntry {
   sessionId: string
@@ -66,7 +67,7 @@ export function TokenDashboardPanel() {
   const { sessions } = useMissionControl()
   const t = useTranslations('tokenDashboard')
 
-  const [selectedTimeframe, setSelectedTimeframe] = useState<'hour' | 'day' | 'week' | 'month'>('day')
+  const [selectedTimeframe, setSelectedTimeframe] = useState<Timeframe>('day')
   const [ignoreSubscriptions, setIgnoreSubscriptions] = useState(false)
   const [usageStats, setUsageStats] = useState<UsageStats | null>(null)
   const [trendData, setTrendData] = useState<TrendData | null>(null)
@@ -83,6 +84,25 @@ export function TokenDashboardPanel() {
 
   // Timezone state
   const [selectedTimezone, setSelectedTimezone] = useState<TimezoneOption>(TIMEZONE_OPTIONS[0])
+
+  const getTimeframeButtonLabel = useCallback((timeframe: Timeframe): string => {
+    switch (timeframe) {
+      case 'hour':
+        return t('timeframeHour')
+      case 'day':
+        return t('timeframeDay')
+      case 'week':
+        return t('timeframeWeek')
+      case 'month':
+        return 'Last 30d'
+      case 'previous_month':
+        return 'Previous month'
+      default:
+        return timeframe
+    }
+  }, [t])
+
+  const timeframeLabel = getTimeframeButtonLabel(selectedTimeframe)
 
   const loadUsageStats = useCallback(async () => {
     setIsLoading(true)
@@ -597,13 +617,13 @@ export function TokenDashboardPanel() {
               </div>
             </div>
             <div className="flex space-x-2">
-              {(['hour', 'day', 'week', 'month'] as const).map((timeframe) => (
+              {(['hour', 'day', 'week', 'month', 'previous_month'] as const).map((timeframe) => (
                 <Button
                   key={timeframe}
                   onClick={() => setSelectedTimeframe(timeframe)}
                   variant={selectedTimeframe === timeframe ? 'default' : 'secondary'}
                 >
-                  {t(`timeframe${timeframe.charAt(0).toUpperCase() + timeframe.slice(1)}` as 'timeframeHour' | 'timeframeDay' | 'timeframeWeek' | 'timeframeMonth')}
+                  {getTimeframeButtonLabel(timeframe)}
                 </Button>
               ))}
             </div>
@@ -751,7 +771,7 @@ export function TokenDashboardPanel() {
                 {formatNumber(filteredUsageStats.summary.totalTokens)}
               </div>
               <div className="text-sm text-muted-foreground">
-                {t('totalTokens', { timeframe: selectedTimeframe })}
+                {t('totalTokens', { timeframe: timeframeLabel })}
               </div>
             </div>
 
@@ -760,7 +780,7 @@ export function TokenDashboardPanel() {
                 {formatCost(filteredUsageStats.summary.totalCost)}
               </div>
               <div className="text-sm text-muted-foreground">
-                {t('totalCost', { timeframe: selectedTimeframe })}
+                {t('totalCost', { timeframe: timeframeLabel })}
               </div>
             </div>
 
@@ -810,7 +830,7 @@ export function TokenDashboardPanel() {
             {/* Usage Trends Chart */}
             <div className="bg-card border border-border rounded-lg p-6 lg:col-span-2">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold">{t('usageTrends', { timeframe: selectedTimeframe })}</h2>
+                <h2 className="text-xl font-semibold">{t('usageTrends', { timeframe: timeframeLabel })}</h2>
                 <div className="flex items-center gap-3">
                   {peakTrendHour && (
                     <span className="text-xs text-muted-foreground">

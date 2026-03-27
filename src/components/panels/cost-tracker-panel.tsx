@@ -109,7 +109,15 @@ const formatCost = (cost: number) => '$' + cost.toFixed(4)
 const getModelDisplayName = (name: string) => name.split('/').pop() || name
 
 type View = 'overview' | 'agents' | 'sessions' | 'tasks'
-type Timeframe = 'hour' | 'day' | 'week' | 'month'
+type Timeframe = 'hour' | 'day' | 'week' | 'month' | 'previous_month'
+
+const TIMEFRAME_LABELS: Record<Timeframe, string> = {
+  hour: 'Hour',
+  day: 'Day',
+  week: 'Week',
+  month: 'Last 30d',
+  previous_month: 'Previous month',
+}
 
 // ── Main Component ──────────────────────────────────
 
@@ -135,17 +143,13 @@ export function CostTrackerPanel() {
 
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const timeframeToDays = (tf: Timeframe): number => {
-    switch (tf) { case 'hour': case 'day': return 1; case 'week': return 7; case 'month': return 30 }
-  }
-
   const loadData = useCallback(async () => {
     setIsLoading(true)
     try {
       const [statsRes, trendRes, byAgentRes, taskRes] = await Promise.all([
         fetch(`/api/tokens?action=stats&timeframe=${timeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
         fetch(`/api/tokens?action=trends&timeframe=${timeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
-        fetch(`/api/tokens/by-agent?days=${timeframeToDays(timeframe)}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens/by-agent?timeframe=${timeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
         fetch(`/api/tokens?action=task-costs&timeframe=${timeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
       ])
       const [statsJson, trendJson, byAgentJson, taskJson] = await Promise.all([
@@ -217,6 +221,7 @@ export function CostTrackerPanel() {
   const agentSummary = byAgentData?.summary
   const agentList = byAgentData?.agents || []
   const maxAgentCost = Math.max(...agentList.map(a => a.total_cost), 0.0001)
+  const timeframeLabel = TIMEFRAME_LABELS[timeframe]
 
   const getAgentTasks = (agentName: string): TaskCostEntry[] => {
     if (!taskData) return []
@@ -272,9 +277,9 @@ export function CostTrackerPanel() {
             </div>
             {/* Timeframe */}
             <div className="flex space-x-1">
-              {(['hour', 'day', 'week', 'month'] as const).map(tf => (
+              {(['hour', 'day', 'week', 'month', 'previous_month'] as const).map((tf) => (
                 <Button key={tf} onClick={() => setTimeframe(tf)} variant={timeframe === tf ? 'default' : 'secondary'} size="sm">
-                  {tf.charAt(0).toUpperCase() + tf.slice(1)}
+                  {TIMEFRAME_LABELS[tf]}
                 </Button>
               ))}
             </div>
@@ -287,7 +292,7 @@ export function CostTrackerPanel() {
       ) : view === 'overview' ? (
         <OverviewView
           stats={usageStats} trendData={trendData} agentSummary={agentSummary}
-          taskData={taskData} timeframe={timeframe} chartMode={chartMode}
+          timeframeLabel={timeframeLabel} taskData={taskData} chartMode={chartMode}
           setChartMode={setChartMode} exportData={exportData} isExporting={isExporting}
           onRefresh={loadData}
         />
@@ -312,12 +317,12 @@ export function CostTrackerPanel() {
 // ── Overview View ──────────────────────────────────
 
 function OverviewView({
-  stats, trendData, agentSummary, taskData, timeframe, chartMode, setChartMode,
+  stats, trendData, agentSummary, taskData, timeframeLabel, chartMode, setChartMode,
   exportData, isExporting, onRefresh,
 }: {
   stats: UsageStats | null; trendData: TrendData | null
   agentSummary: ByAgentResponse['summary'] | undefined; taskData: TaskCostsResponse | null
-  timeframe: Timeframe; chartMode: 'incremental' | 'cumulative'
+  timeframeLabel: string; chartMode: 'incremental' | 'cumulative'
   setChartMode: (m: 'incremental' | 'cumulative') => void
   exportData: (f: 'json' | 'csv') => void; isExporting: boolean
   onRefresh: () => void
@@ -409,7 +414,7 @@ function OverviewView({
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div className="bg-card border border-border rounded-lg p-5">
           <div className="text-3xl font-bold text-foreground">{formatCost(stats.summary.totalCost)}</div>
-          <div className="text-sm text-muted-foreground">{t('totalCost', { timeframe })}</div>
+          <div className="text-sm text-muted-foreground">{t('totalCost', { timeframe: timeframeLabel })}</div>
         </div>
         <div className="bg-card border border-border rounded-lg p-5">
           <div className="text-3xl font-bold text-foreground">{formatNumber(stats.summary.totalTokens)}</div>
@@ -450,6 +455,9 @@ function OverviewView({
             </div>
             <div className="text-xs text-muted-foreground/80 mt-1">
               {xaiProvider?.models || 0} model{xaiProvider?.models === 1 ? '' : 's'}
+            </div>
+            <div className="text-[11px] text-muted-foreground/70 mt-2">
+              Requests include historical Grok session messages; older xAI logs may omit token/cost usage fields.
             </div>
           </div>
 

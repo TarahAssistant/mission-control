@@ -71,4 +71,51 @@ describe('session cost rollups', () => {
     expect(entries[0]?.model).toBe('claude-sonnet-4')
     expect(entries[0]?.totalCost).toBeCloseTo(1.5)
   })
+
+  it('uses non-snapshot request counts when snapshot rows are present', () => {
+    const records: TokenUsageRecord[] = [
+      {
+        id: 'snap-1',
+        model: 'grok-4',
+        sessionId: 'session-123',
+        agentName: 'dennis',
+        timestamp: 10_000,
+        inputTokens: 200,
+        outputTokens: 100,
+        totalTokens: 300,
+        cost: 0.3,
+        operation: 'session_snapshot',
+      },
+      {
+        id: 'req-1',
+        model: 'grok-4',
+        sessionId: 'session-123',
+        agentName: 'dennis',
+        timestamp: 10_500,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        cost: 0,
+        operation: 'xai_historical_request',
+      },
+      {
+        id: 'req-2',
+        model: 'grok-4',
+        sessionId: 'session-123',
+        agentName: 'dennis',
+        timestamp: 11_000,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        cost: 0,
+        operation: 'xai_historical_request',
+      },
+    ]
+
+    const entries = buildSessionCostEntries(records)
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.requestCount).toBe(2)
+    expect(entries[0]?.totalTokens).toBe(300)
+    expect(entries[0]?.totalCost).toBeCloseTo(0.3)
+  })
 })

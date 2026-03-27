@@ -79,6 +79,8 @@ interface TaskCostsResponse {
   timeframe: string
 }
 
+type Timeframe = 'hour' | 'day' | 'week' | 'month' | 'previous_month'
+
 const REFRESH_INTERVAL = 30_000 // 30s auto-refresh
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658', '#ff6b6b']
@@ -271,7 +273,7 @@ function PerAgentBreakdown({
 
 export function AgentCostPanel() {
   const t = useTranslations('agentCost')
-  const [selectedTimeframe, setSelectedTimeframe] = useState<'hour' | 'day' | 'week' | 'month'>('day')
+  const [selectedTimeframe, setSelectedTimeframe] = useState<Timeframe>('day')
   const [ignoreSubscriptions, setIgnoreSubscriptions] = useState(false)
   const [data, setData] = useState<AgentCostsResponse | null>(null)
   const [taskData, setTaskData] = useState<TaskCostsResponse | null>(null)
@@ -282,16 +284,24 @@ export function AgentCostPanel() {
   const [activeView, setActiveView] = useState<'overview' | 'per-agent'>('overview')
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Map timeframe to days param for the by-agent endpoint
-  const timeframeToDays = (tf: string): number => {
-    switch (tf) {
-      case 'hour': return 1
-      case 'day': return 1
-      case 'week': return 7
-      case 'month': return 30
-      default: return 30
+  const getTimeframeLabel = useCallback((timeframe: Timeframe): string => {
+    switch (timeframe) {
+      case 'hour':
+        return t('timeframeHour')
+      case 'day':
+        return t('timeframeDay')
+      case 'week':
+        return t('timeframeWeek')
+      case 'month':
+        return 'Last 30d'
+      case 'previous_month':
+        return 'Previous month'
+      default:
+        return timeframe
     }
-  }
+  }, [t])
+
+  const timeframeLabel = getTimeframeLabel(selectedTimeframe)
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
@@ -299,7 +309,7 @@ export function AgentCostPanel() {
       const [agentRes, taskRes, byAgentRes] = await Promise.all([
         fetch(`/api/tokens?action=agent-costs&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
         fetch(`/api/tokens?action=task-costs&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
-        fetch(`/api/tokens/by-agent?days=${timeframeToDays(selectedTimeframe)}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens/by-agent?timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
       ])
       const [agentJson, taskJson, byAgentJson] = await Promise.all([
         agentRes.json(), taskRes.json(), byAgentRes.json(),
@@ -427,13 +437,13 @@ export function AgentCostPanel() {
               </div>
             </div>
             <div className="flex space-x-2">
-              {(['hour', 'day', 'week', 'month'] as const).map((tf) => (
+              {(['hour', 'day', 'week', 'month', 'previous_month'] as const).map((tf) => (
                 <Button
                   key={tf}
                   onClick={() => setSelectedTimeframe(tf)}
                   variant={selectedTimeframe === tf ? 'default' : 'secondary'}
                 >
-                  {t(`timeframe${tf.charAt(0).toUpperCase() + tf.slice(1)}` as 'timeframeHour' | 'timeframeDay' | 'timeframeWeek' | 'timeframeMonth')}
+                  {getTimeframeLabel(tf)}
                 </Button>
               ))}
             </div>
@@ -463,7 +473,7 @@ export function AgentCostPanel() {
             </div>
             <div className="bg-card border border-border rounded-lg p-5">
               <div className="text-3xl font-bold text-foreground">{formatCost(totalCost)}</div>
-              <div className="text-sm text-muted-foreground">{t('totalCost', { timeframe: selectedTimeframe })}</div>
+              <div className="text-sm text-muted-foreground">{t('totalCost', { timeframe: timeframeLabel })}</div>
             </div>
             <div className="bg-card border border-border rounded-lg p-5">
               <div className="text-3xl font-bold text-orange-500 truncate">{mostExpensive?.[0] || '-'}</div>
