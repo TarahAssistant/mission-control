@@ -460,6 +460,7 @@ export function TokenDashboardPanel() {
     xAI: '#a855f7',
     Mistral: '#f97316',
     Meta: '#6366f1',
+    Ollama: '#f43f5e',
     DeepSeek: '#06b6d4',
     Cohere: '#ec4899',
     Other: '#6b7280',

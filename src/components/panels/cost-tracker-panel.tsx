@@ -83,6 +83,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   Mistral: '#f97316',
   'Venice AI': '#14b8a6',
   Meta: '#6366f1',
+  Ollama: '#f43f5e',
   DeepSeek: '#06b6d4',
   Cohere: '#ec4899',
   Other: '#6b7280',

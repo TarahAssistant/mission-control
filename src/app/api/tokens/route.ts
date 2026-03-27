@@ -81,7 +81,7 @@ interface HistoricalRequestEntry {
   cacheWrite: number
 }
 
-type HistoricalProvider = 'xai' | 'anthropic'
+type HistoricalProvider = 'xai' | 'anthropic' | 'ollama'
 
 interface HistoricalProviderDefinition {
   idPrefix: string
@@ -93,6 +93,7 @@ interface HistoricalProviderDefinition {
 const HISTORICAL_REQUEST_CACHE_TTL_MS = 30_000
 let xaiHistoricalRequestCache: { ts: number; entries: HistoricalRequestEntry[] } | null = null
 let anthropicHistoricalRequestCache: { ts: number; entries: HistoricalRequestEntry[] } | null = null
+let ollamaHistoricalRequestCache: { ts: number; entries: HistoricalRequestEntry[] } | null = null
 
 function toFiniteNumber(value: unknown): number {
   const parsed = Number(value)
@@ -132,6 +133,18 @@ function isAnthropicProviderOrModel(model: string, provider?: string): boolean {
   )
 }
 
+function isOllamaProviderOrModel(model: string, provider?: string): boolean {
+  const lowerModel = model.toLowerCase()
+  const lowerProvider = (provider || '').toLowerCase()
+  return (
+    lowerModel.includes('qwen') ||
+    lowerModel.includes('deepseek') ||
+    lowerModel.includes('ollama/') ||
+    lowerProvider === 'ollama' ||
+    lowerProvider === 'local'
+  )
+}
+
 const HISTORICAL_PROVIDER_DEFINITIONS: Record<HistoricalProvider, HistoricalProviderDefinition> = {
   xai: {
     idPrefix: 'xai-historical',
@@ -144,6 +157,12 @@ const HISTORICAL_PROVIDER_DEFINITIONS: Record<HistoricalProvider, HistoricalProv
     defaultModel: 'claude-unknown',
     lineHints: ['claude', '"provider":"anthropic"', '"model":"anthropic/'],
     matches: isAnthropicProviderOrModel,
+  },
+  ollama: {
+    idPrefix: 'ollama-historical',
+    defaultModel: 'ollama-unknown',
+    lineHints: ['qwen', 'ollama', 'deepseek'],
+    matches: isOllamaProviderOrModel,
   },
 }
 
@@ -310,6 +329,10 @@ export function scanAnthropicHistoricalRequestEntries(stateDirOverride?: string)
   return scanHistoricalRequestEntries('anthropic', stateDirOverride)
 }
 
+export function scanOllamaHistoricalRequestEntries(stateDirOverride?: string): HistoricalRequestEntry[] {
+  return scanHistoricalRequestEntries('ollama', stateDirOverride)
+}
+
 function getCachedXAiHistoricalRequestEntries(): HistoricalRequestEntry[] {
   const now = Date.now()
   if (xaiHistoricalRequestCache && now - xaiHistoricalRequestCache.ts < HISTORICAL_REQUEST_CACHE_TTL_MS) {
@@ -329,6 +352,17 @@ function getCachedAnthropicHistoricalRequestEntries(): HistoricalRequestEntry[] 
 
   const entries = scanAnthropicHistoricalRequestEntries()
   anthropicHistoricalRequestCache = { ts: now, entries }
+  return entries
+}
+
+function getCachedOllamaHistoricalRequestEntries(): HistoricalRequestEntry[] {
+  const now = Date.now()
+  if (ollamaHistoricalRequestCache && now - ollamaHistoricalRequestCache.ts < HISTORICAL_REQUEST_CACHE_TTL_MS) {
+    return ollamaHistoricalRequestCache.entries
+  }
+
+  const entries = scanOllamaHistoricalRequestEntries()
+  ollamaHistoricalRequestCache = { ts: now, entries }
   return entries
 }
 
@@ -374,6 +408,18 @@ function loadAnthropicHistoricalRequestData(
   return mapHistoricalEntriesToTokenUsageRecords(
     getCachedAnthropicHistoricalRequestEntries(),
     'anthropic_historical_request',
+    workspaceId,
+    providerSubscriptions,
+  )
+}
+
+function loadOllamaHistoricalRequestData(
+  workspaceId: number,
+  providerSubscriptions: Record<string, boolean>,
+): TokenUsageRecord[] {
+  return mapHistoricalEntriesToTokenUsageRecords(
+    getCachedOllamaHistoricalRequestEntries(),
+    'ollama_historical_request',
     workspaceId,
     providerSubscriptions,
   )
@@ -610,7 +656,7 @@ function loadOpenCodeTokenData(workspaceId: number, providerSubscriptions: Recor
 
 /**
  * Load token data from all sources: DB, local ledger file, OpenCode DB,
- * Claude CLI logs, xAI + Anthropic historical session JSONL request records,
+ * Claude CLI logs, xAI + Anthropic + Ollama historical session JSONL request records,
  * and live sessions.
  */
 export async function loadTokenData(workspaceId: number, providerSubscriptions: Record<string, boolean>): Promise<TokenUsageRecord[]> {
@@ -621,6 +667,7 @@ export async function loadTokenData(workspaceId: number, providerSubscriptions: 
     claudecodeRecords,
     xaiHistoricalRequestRecords,
     anthropicHistoricalRequestRecords,
+    ollamaHistoricalRequestRecords,
   ] = await Promise.all([
     loadTokenDataFromDb(workspaceId, providerSubscriptions),
     loadTokenDataFromFile(workspaceId, providerSubscriptions),
@@ -628,6 +675,7 @@ export async function loadTokenData(workspaceId: number, providerSubscriptions: 
     loadClaudeCodeTokenData(workspaceId, providerSubscriptions),
     Promise.resolve(loadXAiHistoricalRequestData(workspaceId, providerSubscriptions)),
     Promise.resolve(loadAnthropicHistoricalRequestData(workspaceId, providerSubscriptions)),
+    Promise.resolve(loadOllamaHistoricalRequestData(workspaceId, providerSubscriptions)),
   ])
 
   const sessionRecords = deriveFromSessions(workspaceId, providerSubscriptions)
@@ -639,6 +687,7 @@ export async function loadTokenData(workspaceId: number, providerSubscriptions: 
     ...claudecodeRecords,
     ...xaiHistoricalRequestRecords,
     ...anthropicHistoricalRequestRecords,
+    ...ollamaHistoricalRequestRecords,
     ...sessionRecords,
   ]).sort((a, b) => b.timestamp - a.timestamp)
 
