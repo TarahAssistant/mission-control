@@ -12,6 +12,8 @@ describe('detectProvider', () => {
     ['llama-3', 'Meta'],
     ['deepseek-coder', 'DeepSeek'],
     ['venice/llama-3.3-70b', 'Venice AI'],
+    ['xai/grok-4', 'xAI'],
+    ['grok-beta', 'xAI'],
     ['unknown-model', 'Other'],
   ])('%s -> %s', (model, expected) => {
     expect(detectProvider(model)).toBe(expected)

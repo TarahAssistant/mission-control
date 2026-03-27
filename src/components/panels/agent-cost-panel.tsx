@@ -272,6 +272,7 @@ function PerAgentBreakdown({
 export function AgentCostPanel() {
   const t = useTranslations('agentCost')
   const [selectedTimeframe, setSelectedTimeframe] = useState<'hour' | 'day' | 'week' | 'month'>('day')
+  const [ignoreSubscriptions, setIgnoreSubscriptions] = useState(false)
   const [data, setData] = useState<AgentCostsResponse | null>(null)
   const [taskData, setTaskData] = useState<TaskCostsResponse | null>(null)
   const [byAgentData, setByAgentData] = useState<ByAgentResponse | null>(null)
@@ -296,9 +297,9 @@ export function AgentCostPanel() {
     setIsLoading(true)
     try {
       const [agentRes, taskRes, byAgentRes] = await Promise.all([
-        fetch(`/api/tokens?action=agent-costs&timeframe=${selectedTimeframe}`),
-        fetch(`/api/tokens?action=task-costs&timeframe=${selectedTimeframe}`),
-        fetch(`/api/tokens/by-agent?days=${timeframeToDays(selectedTimeframe)}`),
+        fetch(`/api/tokens?action=agent-costs&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens?action=task-costs&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens/by-agent?days=${timeframeToDays(selectedTimeframe)}&ignoreSubscriptions=${ignoreSubscriptions}`),
       ])
       const [agentJson, taskJson, byAgentJson] = await Promise.all([
         agentRes.json(), taskRes.json(), byAgentRes.json(),
@@ -311,7 +312,7 @@ export function AgentCostPanel() {
     } finally {
       setIsLoading(false)
     }
-  }, [selectedTimeframe])
+  }, [selectedTimeframe, ignoreSubscriptions])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -407,6 +408,23 @@ export function AgentCostPanel() {
               >
                 {t('viewPerAgentDB')}
               </Button>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
+              <span className="text-[11px] text-muted-foreground">Cost mode</span>
+              <div className="flex rounded-md border border-border overflow-hidden">
+                <button
+                  onClick={() => setIgnoreSubscriptions(false)}
+                  className={`px-2 py-1 text-[11px] font-medium transition-colors ${!ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+                >
+                  Adjusted
+                </button>
+                <button
+                  onClick={() => setIgnoreSubscriptions(true)}
+                  className={`px-2 py-1 text-[11px] font-medium transition-colors ${ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+                >
+                  Raw
+                </button>
+              </div>
             </div>
             <div className="flex space-x-2">
               {(['hour', 'day', 'week', 'month'] as const).map((tf) => (

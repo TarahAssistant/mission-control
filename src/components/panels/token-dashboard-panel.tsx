@@ -67,6 +67,7 @@ export function TokenDashboardPanel() {
   const t = useTranslations('tokenDashboard')
 
   const [selectedTimeframe, setSelectedTimeframe] = useState<'hour' | 'day' | 'week' | 'month'>('day')
+  const [ignoreSubscriptions, setIgnoreSubscriptions] = useState(false)
   const [usageStats, setUsageStats] = useState<UsageStats | null>(null)
   const [trendData, setTrendData] = useState<TrendData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -86,7 +87,7 @@ export function TokenDashboardPanel() {
   const loadUsageStats = useCallback(async () => {
     setIsLoading(true)
     try {
-      const response = await fetch(`/api/tokens?action=stats&timeframe=${selectedTimeframe}`)
+      const response = await fetch(`/api/tokens?action=stats&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`)
       const data = await response.json()
       setUsageStats(data)
     } catch (error) {
@@ -94,21 +95,21 @@ export function TokenDashboardPanel() {
     } finally {
       setIsLoading(false)
     }
-  }, [selectedTimeframe])
+  }, [selectedTimeframe, ignoreSubscriptions])
 
   const loadTrendData = useCallback(async () => {
     try {
-      const response = await fetch(`/api/tokens?action=trends&timeframe=${selectedTimeframe}`)
+      const response = await fetch(`/api/tokens?action=trends&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`)
       const data = await response.json()
       setTrendData(data)
     } catch (error) {
       log.error('Failed to load trend data:', error)
     }
-  }, [selectedTimeframe])
+  }, [selectedTimeframe, ignoreSubscriptions])
 
   const loadSessionCosts = useCallback(async () => {
     try {
-      const response = await fetch(`/api/tokens?action=session-costs&timeframe=${selectedTimeframe}`)
+      const response = await fetch(`/api/tokens?action=session-costs&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`)
       const data = await response.json()
       if (Array.isArray(data?.sessions)) {
         setSessionCosts(data.sessions)
@@ -150,7 +151,7 @@ export function TokenDashboardPanel() {
         setSessionCosts(entries)
       }
     }
-  }, [selectedTimeframe, usageStats, sessions])
+  }, [selectedTimeframe, ignoreSubscriptions, usageStats, sessions])
 
   useEffect(() => {
     loadUsageStats()
@@ -269,7 +270,7 @@ export function TokenDashboardPanel() {
   const exportData = async (format: 'json' | 'csv') => {
     setIsExporting(true)
     try {
-      const response = await fetch(`/api/tokens?action=export&timeframe=${selectedTimeframe}&format=${format}`)
+      const response = await fetch(`/api/tokens?action=export&timeframe=${selectedTimeframe}&format=${format}&ignoreSubscriptions=${ignoreSubscriptions}`)
 
       if (!response.ok) {
         throw new Error('Export failed')
@@ -436,6 +437,7 @@ export function TokenDashboardPanel() {
     Anthropic: '#d97706',
     OpenAI: '#10b981',
     Google: '#3b82f6',
+    xAI: '#a855f7',
     Mistral: '#f97316',
     Meta: '#6366f1',
     DeepSeek: '#06b6d4',
@@ -576,6 +578,23 @@ export function TokenDashboardPanel() {
               >
                 {t('viewSessions')}
               </button>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
+              <span className="text-[11px] text-muted-foreground">Cost mode</span>
+              <div className="flex rounded-md border border-border overflow-hidden">
+                <button
+                  onClick={() => setIgnoreSubscriptions(false)}
+                  className={`px-2 py-1 text-[11px] font-medium transition-colors ${!ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+                >
+                  Adjusted
+                </button>
+                <button
+                  onClick={() => setIgnoreSubscriptions(true)}
+                  className={`px-2 py-1 text-[11px] font-medium transition-colors ${ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+                >
+                  Raw
+                </button>
+              </div>
             </div>
             <div className="flex space-x-2">
               {(['hour', 'day', 'week', 'month'] as const).map((timeframe) => (

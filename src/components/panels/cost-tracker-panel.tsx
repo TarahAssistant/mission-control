@@ -95,6 +95,7 @@ export function CostTrackerPanel() {
 
   const [view, setView] = useState<View>('overview')
   const [timeframe, setTimeframe] = useState<Timeframe>('day')
+  const [ignoreSubscriptions, setIgnoreSubscriptions] = useState(false)
   const [chartMode, setChartMode] = useState<'incremental' | 'cumulative'>('incremental')
   const [isLoading, setIsLoading] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
@@ -118,10 +119,10 @@ export function CostTrackerPanel() {
     setIsLoading(true)
     try {
       const [statsRes, trendRes, byAgentRes, taskRes] = await Promise.all([
-        fetch(`/api/tokens?action=stats&timeframe=${timeframe}`),
-        fetch(`/api/tokens?action=trends&timeframe=${timeframe}`),
-        fetch(`/api/tokens/by-agent?days=${timeframeToDays(timeframe)}`),
-        fetch(`/api/tokens?action=task-costs&timeframe=${timeframe}`),
+        fetch(`/api/tokens?action=stats&timeframe=${timeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens?action=trends&timeframe=${timeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens/by-agent?days=${timeframeToDays(timeframe)}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens?action=task-costs&timeframe=${timeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
       ])
       const [statsJson, trendJson, byAgentJson, taskJson] = await Promise.all([
         statsRes.json(), trendRes.json(), byAgentRes.json(), taskRes.json(),
@@ -135,11 +136,11 @@ export function CostTrackerPanel() {
     } finally {
       setIsLoading(false)
     }
-  }, [timeframe])
+  }, [timeframe, ignoreSubscriptions])
 
   const loadSessionCosts = useCallback(async () => {
     try {
-      const res = await fetch(`/api/tokens?action=session-costs&timeframe=${timeframe}`)
+      const res = await fetch(`/api/tokens?action=session-costs&timeframe=${timeframe}&ignoreSubscriptions=${ignoreSubscriptions}`)
       const data = await res.json()
       if (Array.isArray(data?.sessions)) {
         setSessionCosts(data.sessions)
@@ -159,7 +160,7 @@ export function CostTrackerPanel() {
         })))
       }
     }
-  }, [timeframe, usageStats])
+  }, [timeframe, ignoreSubscriptions, usageStats])
 
   useEffect(() => { loadData() }, [loadData])
   useEffect(() => {
@@ -171,7 +172,7 @@ export function CostTrackerPanel() {
   const exportData = async (format: 'json' | 'csv') => {
     setIsExporting(true)
     try {
-      const res = await fetch(`/api/tokens?action=export&timeframe=${timeframe}&format=${format}`)
+      const res = await fetch(`/api/tokens?action=export&timeframe=${timeframe}&format=${format}&ignoreSubscriptions=${ignoreSubscriptions}`)
       if (!res.ok) throw new Error('Export failed')
       const blob = await res.blob()
       const url = window.URL.createObjectURL(blob)
@@ -223,6 +224,23 @@ export function CostTrackerPanel() {
                   {v.charAt(0).toUpperCase() + v.slice(1)}
                 </button>
               ))}
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
+              <span className="text-[11px] text-muted-foreground">Cost mode</span>
+              <div className="flex rounded-md border border-border overflow-hidden">
+                <button
+                  onClick={() => setIgnoreSubscriptions(false)}
+                  className={`px-2 py-1 text-[11px] font-medium transition-colors ${!ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+                >
+                  Adjusted
+                </button>
+                <button
+                  onClick={() => setIgnoreSubscriptions(true)}
+                  className={`px-2 py-1 text-[11px] font-medium transition-colors ${ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+                >
+                  Raw
+                </button>
+              </div>
             </div>
             {/* Timeframe */}
             <div className="flex space-x-1">
