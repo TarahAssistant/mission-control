@@ -45,6 +45,7 @@ const navGroups: NavGroup[] = [
     items: [
       { id: 'activity', label: 'Activity', icon: <ActivityIcon />, priority: true, essential: true },
       { id: 'logs', label: 'Logs', icon: <LogsIcon />, priority: false, essential: true },
+      { id: 'system', label: 'System', icon: <SystemIcon />, priority: false },
       { id: 'cost-tracker', label: 'Cost Tracker', icon: <TokensIcon />, priority: false },
       { id: 'nodes', label: 'Nodes', icon: <NodesIcon />, priority: false },
       { id: 'exec-approvals', label: 'Approvals', icon: <ApprovalsIcon />, priority: false },
@@ -1267,6 +1268,16 @@ function ActivityIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="1,8 4,8 6,3 8,13 10,6 12,8 15,8" />
+    </svg>
+  )
+}
+
+function SystemIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="1.5" y="2" width="13" height="8.5" rx="1.5" />
+      <path d="M4 13h8M6.5 10.5V13M9.5 10.5V13" />
+      <path d="M4 7.5h1.8l1-2.5L8.6 9l1.5-3 1.1 1.5H12" />
     </svg>
   )
 }

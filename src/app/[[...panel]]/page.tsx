@@ -39,6 +39,7 @@ import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
 import { ChatPagePanel } from '@/components/panels/chat-page-panel'
 import { SessionDetailsPanel } from '@/components/panels/session-details-panel'
 import { DocumentsPanel } from '@/components/panels/documents-panel'
+import SystemStatsPanel from '@/components/panels/system-stats-panel'
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { getPluginPanel } from '@/lib/plugins'
 import { shouldRedirectDashboardToHttps } from '@/lib/browser-security'
@@ -520,6 +521,9 @@ function ContentRouter({ tab }: { tab: string }) {
       return <SessionDetailsPanel />
     case 'logs':
       return <LogViewerPanel />
+    case 'system':
+    case 'system-stats':
+      return <SystemStatsPanel />
     case 'cron':
       return <CronManagementPanel />
     case 'memory':
