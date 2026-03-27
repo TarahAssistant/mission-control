@@ -1,19 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { getDatabase } from '@/lib/db'
-import { calculateTokenCost } from '@/lib/token-pricing'
 import { getProviderSubscriptionFlags } from '@/lib/provider-subscriptions'
 import { logger } from '@/lib/logger'
-
-interface AgentBreakdownRow {
-  agent_name: string
-  total_input_tokens: number
-  total_output_tokens: number
-  session_count: number
-  request_count: number
-  last_active: number
-  models_json: string
-}
+import { extractAgentName, loadTokenData } from '@/app/api/tokens/route'
 
 interface ModelBreakdown {
   model: string
@@ -35,10 +24,22 @@ interface AgentBreakdown {
   models: ModelBreakdown[]
 }
 
+interface AgentAccumulator {
+  agent: string
+  total_input_tokens: number
+  total_output_tokens: number
+  total_cost: number
+  request_count: number
+  last_active_ts: number
+  sessions: Set<string>
+  models: Map<string, ModelBreakdown>
+}
+
 /**
- * GET /api/tokens/by-agent - Per-agent cost breakdown from token_usage table
+ * GET /api/tokens/by-agent - Per-agent cost breakdown from all token sources
  * Query params:
  *   days=N  - Time window in days (default 30)
+ *   ignoreSubscriptions=true - do not zero-out subscribed provider costs
  */
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
@@ -47,87 +48,80 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const days = Math.max(1, Math.min(365, Number(searchParams.get('days') || 30)))
+    const ignoreSubscriptions = searchParams.get('ignoreSubscriptions') === 'true'
     const workspaceId = auth.user.workspace_id ?? 1
 
-    const db = getDatabase()
-    const cutoff = Math.floor(Date.now() / 1000) - days * 86400
-    const providerSubscriptions = getProviderSubscriptionFlags()
+    const cutoffMs = Date.now() - days * 86_400_000
+    const providerSubscriptions = ignoreSubscriptions ? {} : getProviderSubscriptionFlags()
+    const allRecords = await loadTokenData(workspaceId, providerSubscriptions)
+    const records = allRecords.filter((record) => record.timestamp >= cutoffMs)
 
-    // Query per-agent totals with per-model breakdown embedded as JSON
-    const rows = db.prepare(`
-      SELECT
-        CASE
-          WHEN INSTR(session_id, ':') > 0 THEN SUBSTR(session_id, 1, INSTR(session_id, ':') - 1)
-          ELSE session_id
-        END AS agent_name,
-        SUM(input_tokens)  AS total_input_tokens,
-        SUM(output_tokens) AS total_output_tokens,
-        COUNT(DISTINCT session_id) AS session_count,
-        COUNT(*)           AS request_count,
-        MAX(created_at)    AS last_active,
-        GROUP_CONCAT(DISTINCT model) AS models_json
-      FROM token_usage
-      WHERE workspace_id = ?
-        AND created_at >= ?
-      GROUP BY agent_name
-      ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC
-    `).all(workspaceId, cutoff) as AgentBreakdownRow[]
+    const byAgent = new Map<string, AgentAccumulator>()
+    for (const record of records) {
+      const agentName = record.agentName || extractAgentName(record.sessionId)
+      let agent = byAgent.get(agentName)
+      if (!agent) {
+        agent = {
+          agent: agentName,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          total_cost: 0,
+          request_count: 0,
+          last_active_ts: 0,
+          sessions: new Set(),
+          models: new Map(),
+        }
+        byAgent.set(agentName, agent)
+      }
 
-    // For accurate per-model cost we need a second pass grouping by agent+model
-    const modelRows = db.prepare(`
-      SELECT
-        CASE
-          WHEN INSTR(session_id, ':') > 0 THEN SUBSTR(session_id, 1, INSTR(session_id, ':') - 1)
-          ELSE session_id
-        END AS agent_name,
-        model,
-        SUM(input_tokens)  AS input_tokens,
-        SUM(output_tokens) AS output_tokens,
-        COUNT(*)           AS request_count
-      FROM token_usage
-      WHERE workspace_id = ?
-        AND created_at >= ?
-      GROUP BY agent_name, model
-      ORDER BY agent_name, (SUM(input_tokens) + SUM(output_tokens)) DESC
-    `).all(workspaceId, cutoff) as Array<{
-      agent_name: string
-      model: string
-      input_tokens: number
-      output_tokens: number
-      request_count: number
-    }>
+      agent.total_input_tokens += record.inputTokens
+      agent.total_output_tokens += record.outputTokens
+      agent.total_cost += record.cost
+      agent.request_count += 1
+      agent.sessions.add(record.sessionId)
+      if (record.timestamp > agent.last_active_ts) {
+        agent.last_active_ts = record.timestamp
+      }
 
-    // Build model map keyed by agent name
-    const modelsByAgent = new Map<string, ModelBreakdown[]>()
-    for (const row of modelRows) {
-      const cost = calculateTokenCost(row.model, row.input_tokens, row.output_tokens, { providerSubscriptions })
-      const list = modelsByAgent.get(row.agent_name) || []
-      list.push({
-        model: row.model,
-        input_tokens: row.input_tokens,
-        output_tokens: row.output_tokens,
-        request_count: row.request_count,
-        cost,
-      })
-      modelsByAgent.set(row.agent_name, list)
+      let model = agent.models.get(record.model)
+      if (!model) {
+        model = {
+          model: record.model,
+          input_tokens: 0,
+          output_tokens: 0,
+          request_count: 0,
+          cost: 0,
+        }
+        agent.models.set(record.model, model)
+      }
+      model.input_tokens += record.inputTokens
+      model.output_tokens += record.outputTokens
+      model.request_count += 1
+      model.cost += record.cost
     }
 
-    // Assemble final response
-    const agents: AgentBreakdown[] = rows.map((row) => {
-      const models = modelsByAgent.get(row.agent_name) || []
-      const totalCost = models.reduce((sum, m) => sum + m.cost, 0)
-      return {
-        agent: row.agent_name,
-        total_input_tokens: row.total_input_tokens,
-        total_output_tokens: row.total_output_tokens,
-        total_tokens: row.total_input_tokens + row.total_output_tokens,
-        total_cost: totalCost,
-        session_count: row.session_count,
-        request_count: row.request_count,
-        last_active: new Date(row.last_active * 1000).toISOString(),
-        models,
-      }
-    })
+    const agents: AgentBreakdown[] = [...byAgent.values()]
+      .map((agent) => {
+        const models = [...agent.models.values()].sort((a, b) => {
+          if (b.cost !== a.cost) return b.cost - a.cost
+          return (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)
+        })
+        return {
+          agent: agent.agent,
+          total_input_tokens: agent.total_input_tokens,
+          total_output_tokens: agent.total_output_tokens,
+          total_tokens: agent.total_input_tokens + agent.total_output_tokens,
+          total_cost: agent.total_cost,
+          session_count: agent.sessions.size,
+          request_count: agent.request_count,
+          last_active: new Date(agent.last_active_ts || 0).toISOString(),
+          models,
+        }
+      })
+      .sort((a, b) => {
+        if (b.total_tokens !== a.total_tokens) return b.total_tokens - a.total_tokens
+        return b.total_cost - a.total_cost
+      })
 
     const totalCost = agents.reduce((sum, a) => sum + a.total_cost, 0)
     const totalTokens = agents.reduce((sum, a) => sum + a.total_tokens, 0)

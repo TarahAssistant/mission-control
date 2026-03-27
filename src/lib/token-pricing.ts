@@ -28,10 +28,10 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   'claude-3-5-sonnet-latest': { inputPerMTok: 3.0, outputPerMTok: 15.0, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.30 },
   'anthropic/claude-3-5-sonnet-latest': { inputPerMTok: 3.0, outputPerMTok: 15.0, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.30 },
   'claude-3-5-sonnet': { inputPerMTok: 3.0, outputPerMTok: 15.0, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.30 },
-  'claude-opus-4-5': { inputPerMTok: 5.0, outputPerMTok: 25.0, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.50 },
-  'anthropic/claude-opus-4-5': { inputPerMTok: 5.0, outputPerMTok: 25.0, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.50 },
-  'claude-opus-4-6': { inputPerMTok: 5.0, outputPerMTok: 25.0, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.50 },
-  'anthropic/claude-opus-4-6': { inputPerMTok: 5.0, outputPerMTok: 25.0, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.50 },
+  'claude-opus-4-5': { inputPerMTok: 15.0, outputPerMTok: 75.0, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.50 },
+  'anthropic/claude-opus-4-5': { inputPerMTok: 15.0, outputPerMTok: 75.0, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.50 },
+  'claude-opus-4-6': { inputPerMTok: 15.0, outputPerMTok: 75.0, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.50 },
+  'anthropic/claude-opus-4-6': { inputPerMTok: 15.0, outputPerMTok: 75.0, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.50 },
   'claude-3-opus-latest': { inputPerMTok: 15.0, outputPerMTok: 75.0, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.50 },
   
   'gemini-3-pro-preview': { inputPerMTok: 1.25, outputPerMTok: 5.0, cacheReadPerMTok: 0.3125 },
@@ -67,6 +67,10 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   
   'openai-codex/gpt-5.3-codex': { inputPerMTok: 2.5, outputPerMTok: 10.0 },
   'openai-codex/gpt-5.4-codex': { inputPerMTok: 2.5, outputPerMTok: 10.0 },
+  'ollama/qwen2.5-coder:7b': { inputPerMTok: 0.0, outputPerMTok: 0.0 },
+  'ollama/qwen2.5-coder:14b': { inputPerMTok: 0.0, outputPerMTok: 0.0 },
+  'qwen2.5-coder:7b': { inputPerMTok: 0.0, outputPerMTok: 0.0 },
+  'qwen2.5-coder:14b': { inputPerMTok: 0.0, outputPerMTok: 0.0 },
   'qwen3-coder:30b': { inputPerMTok: 0.0, outputPerMTok: 0.0 },
   'ollama/qwen3-coder:30b': { inputPerMTok: 0.0, outputPerMTok: 0.0 },
 

@@ -17,7 +17,7 @@ export const dynamic = 'force-dynamic'
 
 const DATA_PATH = config.tokensPath
 
-interface TokenUsageRecord {
+export interface TokenUsageRecord {
   id: string
   model: string
   sessionId: string
@@ -33,7 +33,7 @@ interface TokenUsageRecord {
   duration?: number
 }
 
-interface TokenStats {
+export interface TokenStats {
   totalTokens: number
   totalCost: number
   requestCount: number
@@ -50,7 +50,7 @@ interface ExportData {
 
 interface TaskMetadataRow extends TaskCostMetadata {}
 
-function extractAgentName(sessionId: string): string {
+export function extractAgentName(sessionId: string): string {
   const trimmed = sessionId.trim()
   if (!trimmed) return 'unknown'
   const [agent] = trimmed.split(':')
@@ -153,7 +153,7 @@ function dedupeTokenRecords(records: TokenUsageRecord[]): TokenUsageRecord[] {
   return deduped
 }
 
-async function loadTokenDataFromFile(workspaceId: number, providerSubscriptions: Record<string, boolean>): Promise<TokenUsageRecord[]> {
+export async function loadTokenDataFromFile(workspaceId: number, providerSubscriptions: Record<string, boolean>): Promise<TokenUsageRecord[]> {
   try {
     ensureDirExists(dirname(DATA_PATH))
     await access(DATA_PATH)
@@ -300,7 +300,7 @@ function loadOpenCodeTokenData(workspaceId: number, providerSubscriptions: Recor
 /**
  * Load token data from all sources: DB, local ledger file, OpenCode DB, Claude CLI logs, and live sessions.
  */
-async function loadTokenData(workspaceId: number, providerSubscriptions: Record<string, boolean>): Promise<TokenUsageRecord[]> {
+export async function loadTokenData(workspaceId: number, providerSubscriptions: Record<string, boolean>): Promise<TokenUsageRecord[]> {
   const [dbRecords, fileRecords, opencodeRecords, claudecodeRecords] = await Promise.all([
     loadTokenDataFromDb(workspaceId, providerSubscriptions),
     loadTokenDataFromFile(workspaceId, providerSubscriptions),
@@ -417,7 +417,7 @@ async function saveTokenData(data: TokenUsageRecord[]): Promise<void> {
   await writeFile(DATA_PATH, JSON.stringify(data, null, 2))
 }
 
-function calculateStats(records: TokenUsageRecord[]): TokenStats {
+export function calculateStats(records: TokenUsageRecord[]): TokenStats {
   if (records.length === 0) {
     return {
       totalTokens: 0,
@@ -441,7 +441,7 @@ function calculateStats(records: TokenUsageRecord[]): TokenStats {
   }
 }
 
-function filterByTimeframe(records: TokenUsageRecord[], timeframe: string): TokenUsageRecord[] {
+export function filterByTimeframe(records: TokenUsageRecord[], timeframe: string): TokenUsageRecord[] {
   const now = Date.now()
   let cutoffTime: number
 
@@ -464,6 +464,77 @@ function filterByTimeframe(records: TokenUsageRecord[], timeframe: string): Toke
   }
 
   return records.filter(record => record.timestamp >= cutoffTime)
+}
+
+interface SessionCostEntry {
+  sessionId: string
+  model: string
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  totalCost: number
+  requestCount: number
+  firstSeen: string
+  lastSeen: string
+}
+
+export function buildSessionCostEntries(records: TokenUsageRecord[]): SessionCostEntry[] {
+  const bySessionModel = new Map<string, {
+    sessionId: string
+    model: string
+    totalTokens: number
+    inputTokens: number
+    outputTokens: number
+    totalCost: number
+    requestCount: number
+    firstSeenTs: number
+    lastSeenTs: number
+  }>()
+
+  for (const record of records) {
+    const key = `${record.sessionId}::${record.model}`
+    const existing = bySessionModel.get(key)
+    if (existing) {
+      existing.totalTokens += record.totalTokens
+      existing.inputTokens += record.inputTokens
+      existing.outputTokens += record.outputTokens
+      existing.totalCost += record.cost
+      existing.requestCount += 1
+      if (record.timestamp < existing.firstSeenTs) existing.firstSeenTs = record.timestamp
+      if (record.timestamp > existing.lastSeenTs) existing.lastSeenTs = record.timestamp
+      continue
+    }
+
+    bySessionModel.set(key, {
+      sessionId: record.sessionId,
+      model: record.model,
+      totalTokens: record.totalTokens,
+      inputTokens: record.inputTokens,
+      outputTokens: record.outputTokens,
+      totalCost: record.cost,
+      requestCount: 1,
+      firstSeenTs: record.timestamp,
+      lastSeenTs: record.timestamp,
+    })
+  }
+
+  return [...bySessionModel.values()]
+    .map((entry) => ({
+      sessionId: entry.sessionId,
+      model: entry.model,
+      totalTokens: entry.totalTokens,
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      totalCost: entry.totalCost,
+      requestCount: entry.requestCount,
+      firstSeen: new Date(entry.firstSeenTs).toISOString(),
+      lastSeen: new Date(entry.lastSeenTs).toISOString(),
+    }))
+    .sort((a, b) => {
+      if (b.totalCost !== a.totalCost) return b.totalCost - a.totalCost
+      if (b.totalTokens !== a.totalTokens) return b.totalTokens - a.totalTokens
+      return b.lastSeen.localeCompare(a.lastSeen)
+    })
 }
 
 function loadTaskMetadataById(workspaceId: number, taskIds: number[]): Record<number, TaskCostMetadata> {
@@ -514,6 +585,14 @@ export async function GET(request: NextRequest) {
 
     const tokenData = await loadTokenData(workspaceId, providerSubscriptions)
     const filteredData = filterByTimeframe(tokenData, timeframe)
+
+    if (action === 'list') {
+      return NextResponse.json({
+        usage: filteredData.slice(0, 100),
+        total: filteredData.length,
+        timeframe,
+      })
+    }
     
     if (action === 'stats') {
       const overallStats = calculateStats(filteredData)
@@ -623,6 +702,14 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({
         agents,
+        timeframe,
+        recordCount: filteredData.length,
+      })
+    }
+
+    if (action === 'session-costs' || action === 'session_costs' || action === 'sessioncosts') {
+      return NextResponse.json({
+        sessions: buildSessionCostEntries(filteredData),
         timeframe,
         recordCount: filteredData.length,
       })
