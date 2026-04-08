@@ -11,6 +11,7 @@ function mkSession(agent: string, key: string): GatewaySession {
     chatType: 'direct',
     channel: 'test',
     model: 'test-model',
+    label: '',
     totalTokens: 0,
     inputTokens: 0,
     outputTokens: 0,

@@ -12,6 +12,8 @@ export interface GatewaySession {
   chatType: string
   channel: string
   model: string
+  /** Cron job label, e.g. "Cron: Security Report Reminder" */
+  label: string
   totalTokens: number
   inputTokens: number
   outputTokens: number
@@ -90,6 +92,7 @@ export function getAllGatewaySessions(activeWithinMs = 60 * 60 * 1000, force = f
             chatType: s.chatType || 'unknown',
             channel: s.deliveryContext?.channel || s.lastChannel || s.channel || '',
             model: typeof s.model === 'object' && s.model?.primary ? String(s.model.primary) : String(s.model || ''),
+            label: s.label || '',
             totalTokens: s.totalTokens || 0,
             inputTokens: s.inputTokens || 0,
             outputTokens: s.outputTokens || 0,
