@@ -289,35 +289,149 @@ async function getTopProcesses(): Promise<Array<{ pid: string; name: string; cpu
   }
 }
 
-function getActiveSessionsByModel(): Record<string, number> {
+interface ActiveModelSession {
+  agent: string
+  label: string
+  key: string
+  channel: string
+}
+
+interface OllamaModelStatus {
+  name: string
+  canonicalName: string
+  displayName: string
+  isLocalAlias: boolean
+  aliases: string[]
+  matchNames: string[]
+  size: string
+  processor: string
+  context: string
+  until: string
+}
+
+const OLLAMA_PROVIDER_ALIAS_PREFIXES = [
+  'anthropic/',
+  'openai/',
+  'google/',
+  'xai/',
+  'groq/',
+  'mistral/',
+  'deepseek/',
+  'meta/',
+]
+
+function getActiveSessionsByModel(): Record<string, ActiveModelSession[]> {
   try {
     const sessions = getAllGatewaySessions(5 * 60 * 1000) // active in last 5 min
-    const counts: Record<string, number> = {}
+    const byModel: Record<string, ActiveModelSession[]> = {}
     for (const s of sessions) {
       if (!s.active || !s.model) continue
       const model = s.model.toLowerCase()
-      counts[model] = (counts[model] || 0) + 1
+      if (!byModel[model]) byModel[model] = []
+      byModel[model].push({
+        agent: s.agent,
+        label: s.label || '',
+        key: s.key,
+        channel: s.channel || '',
+      })
     }
-    return counts
+    return byModel
   } catch {
     return {}
   }
 }
 
-async function getOllamaModels(): Promise<Array<{ name: string; size: string; processor: string; context: string; until: string }>> {
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)))
+}
+
+function stripOllamaTag(name: string): string {
+  const tagIndex = name.lastIndexOf(':')
+  return tagIndex > -1 ? name.slice(0, tagIndex) : name
+}
+
+function isProviderStyleOllamaAlias(name: string): boolean {
+  const normalized = name.trim().toLowerCase()
+  return OLLAMA_PROVIDER_ALIAS_PREFIXES.some(prefix => normalized.startsWith(prefix))
+}
+
+function buildOllamaMatchNames(names: string[]): string[] {
+  return uniqueStrings(names.flatMap(name => [name.toLowerCase(), stripOllamaTag(name).toLowerCase()]))
+}
+
+function pickCanonicalOllamaName(names: string[], loadedName: string): string {
+  const candidates = uniqueStrings(names)
+  if (candidates.length === 0) return loadedName
+
+  const scored = candidates
+    .map(name => ({
+      name,
+      score:
+        (name === loadedName ? 1 : 0) +
+        (!name.includes('/') ? 100 : 0) +
+        (!isProviderStyleOllamaAlias(name) ? 20 : 0) +
+        (!name.endsWith(':latest') ? 5 : 0),
+    }))
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+
+  return scored[0]?.name || loadedName
+}
+
+async function getOllamaModelNamesById(): Promise<Record<string, string[]>> {
   try {
-    const { stdout } = await runCommand('ollama', ['ps'], { timeoutMs: 5000 })
+    const { stdout } = await runCommand('ollama', ['list'], { timeoutMs: 5000 })
+    const lines = stdout.trim().split('\n')
+    if (lines.length < 2) return {}
+
+    const header = lines[0]
+    const colStarts = ['NAME', 'ID', 'SIZE', 'MODIFIED'].map(col => header.indexOf(col))
+    const byId: Record<string, string[]> = {}
+
+    for (const line of lines.slice(1).filter(l => l.trim())) {
+      const get = (start: number, end: number) => (end > start ? line.slice(start, end) : line.slice(start)).trim()
+      const name = get(colStarts[0], colStarts[1])
+      const id = get(colStarts[1], colStarts[2])
+      if (!name || !id) continue
+      if (!byId[id]) byId[id] = []
+      byId[id].push(name)
+    }
+
+    return byId
+  } catch {
+    return {}
+  }
+}
+
+async function getOllamaModels(): Promise<OllamaModelStatus[]> {
+  try {
+    const [{ stdout }, modelNamesById] = await Promise.all([
+      runCommand('ollama', ['ps'], { timeoutMs: 5000 }),
+      getOllamaModelNamesById(),
+    ])
+
     const lines = stdout.trim().split('\n')
     if (lines.length < 2) return []
-    // Parse header to find column positions
+
     const header = lines[0]
     const colStarts = ['NAME', 'ID', 'SIZE', 'PROCESSOR', 'CONTEXT', 'UNTIL'].map(col => header.indexOf(col))
+
     return lines.slice(1)
       .filter(l => l.trim())
       .map(line => {
         const get = (start: number, end: number) => (end > start ? line.slice(start, end) : line.slice(start)).trim()
+        const name = get(colStarts[0], colStarts[1])
+        const id = get(colStarts[1], colStarts[2])
+        const relatedNames = uniqueStrings([name, ...(modelNamesById[id] || [])])
+        const canonicalName = pickCanonicalOllamaName(relatedNames, name)
+        const isLocalAlias = canonicalName !== name
+
         return {
-          name: get(colStarts[0], colStarts[1]),
+          name,
+          canonicalName,
+          displayName: isLocalAlias ? `${name} → ${canonicalName} (local alias)` : name,
+          isLocalAlias,
+          aliases: relatedNames.filter(candidate => candidate !== name),
+          matchNames: buildOllamaMatchNames(relatedNames),
           size: get(colStarts[2], colStarts[3]),
           processor: get(colStarts[3], colStarts[4] > 0 ? colStarts[4] : colStarts[5]),
           context: colStarts[4] > 0 ? get(colStarts[4], colStarts[5]) : '',
@@ -345,8 +459,8 @@ async function getSystemStatus(workspaceId: number) {
     cpuCores: 0,
     loadAvg: { one: 0, five: 0, fifteen: 0 },
     topProcesses: [] as any[],
-    ollamaModels: [] as any[],
-    activeSessionsByModel: {} as Record<string, number>,
+    ollamaModels: [] as OllamaModelStatus[],
+    activeSessionsByModel: {} as Record<string, ActiveModelSession[]>,
   }
 
   try {

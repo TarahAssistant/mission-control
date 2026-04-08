@@ -21,10 +21,22 @@ interface ProcessInfo {
 
 interface OllamaModel {
   name: string;
+  canonicalName: string;
+  displayName: string;
+  isLocalAlias: boolean;
+  aliases: string[];
+  matchNames: string[];
   size: string;
   processor: string;
   context: string;
   until: string;
+}
+
+interface ActiveModelSession {
+  agent: string;
+  label: string;
+  key: string;
+  channel: string;
 }
 
 interface SystemData {
@@ -39,7 +51,7 @@ interface SystemData {
   uptime: number;
   topProcesses: ProcessInfo[];
   ollamaModels: OllamaModel[];
-  activeSessionsByModel: Record<string, number>;
+  activeSessionsByModel: Record<string, ActiveModelSession[]>;
 }
 
 function formatUptime(ms: number): string {
@@ -311,27 +323,78 @@ const SystemStatsPanel = () => {
         ) : (
           <div className="space-y-2">
             {data.ollamaModels.map((m, i) => {
-              // count active sessions using this model (match on base name, case-insensitive)
-              const baseName = m.name.split(':')[0].toLowerCase()
-              const activeSessions = Object.entries(data.activeSessionsByModel)
-                .filter(([k]) => k.includes(baseName))
-                .reduce((acc, [, v]) => acc + v, 0)
+              const sessions = Object.entries(data.activeSessionsByModel)
+                .filter(([modelKey]) => {
+                  const normalizedKey = modelKey.toLowerCase()
+                  return m.matchNames.some(matchName => normalizedKey.includes(matchName))
+                })
+                .flatMap(([, v]) => v)
               return (
-                <div key={i} className="flex items-center justify-between bg-secondary/40 rounded-lg px-3 py-2">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-emerald-400">{m.name}</span>
-                      {activeSessions > 0 && (
-                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${activeSessions >= 3 ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
-                          {activeSessions} agent{activeSessions !== 1 ? 's' : ''} active
-                        </span>
+                <div key={i} className="bg-secondary/40 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      {m.isLocalAlias ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-medium text-emerald-400">{m.name}</span>
+                          <span className="text-xs text-muted-foreground">→</span>
+                          <span className="text-sm font-medium text-foreground">{m.canonicalName}</span>
+                          <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-400">
+                            local alias
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-sm font-medium text-emerald-400">{m.name}</span>
                       )}
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        {m.size}{m.processor ? ` · ${m.processor}` : ''}{m.context ? ` · ${m.context} ctx` : ''}
+                      </div>
                     </div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {m.size}{m.processor ? ` · ${m.processor}` : ''}{m.context ? ` · ${m.context} ctx` : ''}
-                    </div>
+                    {m.until && <div className="text-xs text-muted-foreground">unloads {m.until}</div>}
                   </div>
-                  {m.until && <div className="text-xs text-muted-foreground">unloads {m.until}</div>}
+                  {sessions.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {sessions.map((s, j) => {
+                        const isCron = s.key.includes(':cron:')
+                        const isDiscord = s.key.includes(':discord:')
+                        const isWebchat = s.channel === 'webchat'
+                        // Derive what this session is for
+                        let icon: string
+                        let label: string
+                        let colorClass: string
+                        if (isCron && s.label) {
+                          icon = '⏰'
+                          label = s.label.replace(/^Cron:\s*/i, '')
+                          colorClass = 'bg-blue-500/15 text-blue-400'
+                        } else if (isDiscord) {
+                          icon = '💬'
+                          label = `${s.agent} · Discord`
+                          colorClass = 'bg-indigo-500/15 text-indigo-400'
+                        } else if (isWebchat) {
+                          icon = '🌐'
+                          label = `${s.agent} · Webchat`
+                          colorClass = 'bg-cyan-500/15 text-cyan-400'
+                        } else {
+                          icon = '🤖'
+                          // main sessions, subagent work, coding tasks, etc.
+                          label = s.agent
+                          colorClass = 'bg-violet-500/15 text-violet-400'
+                        }
+                        return (
+                          <span
+                            key={j}
+                            className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${colorClass}`}
+                            title={s.key}
+                          >
+                            <span className="opacity-60">{icon}</span>
+                            {label}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {sessions.length === 0 && (
+                    <div className="mt-1 text-xs text-muted-foreground italic">Idle — no active sessions</div>
+                  )}
                 </div>
               )
             })}
