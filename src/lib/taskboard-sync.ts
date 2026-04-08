@@ -4,6 +4,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { logger } from '@/lib/logger'
 
+function formatTicketRef(prefix?: string | null, num?: number | null): string | null {
+  if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return null
+  return `${prefix}-${String(num).padStart(3, '0')}`
+}
+
+function getTaskboardRef(task: Task): string {
+  return task.ticket_ref || formatTicketRef(task.project_prefix, task.project_ticket_no) || `MC-${task.id}`
+}
+
 export async function syncTaskboardMd() {
   try {
     const workspaceDir = config.openclawHome ? path.join(config.openclawHome, 'workspace') : ''
@@ -19,9 +28,12 @@ export async function syncTaskboardMd() {
     // Get all tasks, excluding done ones that are older than maybe 7 days if we want to keep it clean,
     // but for now let's just get all active tasks. Let's group them by status.
     const tasks = db.prepare(`
-      SELECT * FROM tasks 
-      WHERE status != 'done' OR (status = 'done' AND completed_at > (unixepoch() - 86400 * 7))
-      ORDER BY priority DESC, created_at DESC
+      SELECT t.*, p.name as project_name, p.ticket_prefix as project_prefix
+      FROM tasks t
+      LEFT JOIN projects p
+        ON p.id = t.project_id AND p.workspace_id = t.workspace_id
+      WHERE t.status != 'done' OR (t.status = 'done' AND t.completed_at > (unixepoch() - 86400 * 7))
+      ORDER BY t.priority DESC, t.created_at DESC
     `).all() as Task[]
 
     const grouped: Record<string, Task[]> = {
@@ -63,7 +75,7 @@ export async function syncTaskboardMd() {
           }
         } catch (e) {}
       }
-      return `- [${t.status === 'done' ? 'x' : ' '}] **MC-${t.id}**: ${t.title} ${p}${assignee}${tags}\n` + 
+      return `- [${t.status === 'done' ? 'x' : ' '}] **${getTaskboardRef(t)}**: ${t.title} ${p}${assignee}${tags}\n` + 
              (t.description ? `  > ${t.description.split('\\n')[0].substring(0, 100)}${t.description.length > 100 ? '...' : ''}\n` : '')
     }
 
