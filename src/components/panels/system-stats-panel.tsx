@@ -20,11 +20,7 @@ interface ProcessInfo {
 }
 
 interface OllamaModel {
-  name: string;
   canonicalName: string;
-  displayName: string;
-  isLocalAlias: boolean;
-  aliases: string[];
   matchNames: string[];
   size: string;
   processor: string;
@@ -333,18 +329,7 @@ const SystemStatsPanel = () => {
                 <div key={i} className="bg-secondary/40 rounded-lg px-3 py-2">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      {m.isLocalAlias ? (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-medium text-emerald-400">{m.name}</span>
-                          <span className="text-xs text-muted-foreground">→</span>
-                          <span className="text-sm font-medium text-foreground">{m.canonicalName}</span>
-                          <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-400">
-                            local alias
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-sm font-medium text-emerald-400">{m.name}</span>
-                      )}
+                      <span className="text-sm font-medium text-emerald-400">{m.canonicalName}</span>
                       <div className="text-xs text-muted-foreground mt-0.5">
                         {m.size}{m.processor ? ` · ${m.processor}` : ''}{m.context ? ` · ${m.context} ctx` : ''}
                       </div>

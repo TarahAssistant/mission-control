@@ -297,11 +297,7 @@ interface ActiveModelSession {
 }
 
 interface OllamaModelStatus {
-  name: string
   canonicalName: string
-  displayName: string
-  isLocalAlias: boolean
-  aliases: string[]
   matchNames: string[]
   size: string
   processor: string
@@ -423,14 +419,9 @@ async function getOllamaModels(): Promise<OllamaModelStatus[]> {
         const id = get(colStarts[1], colStarts[2])
         const relatedNames = uniqueStrings([name, ...(modelNamesById[id] || [])])
         const canonicalName = pickCanonicalOllamaName(relatedNames, name)
-        const isLocalAlias = canonicalName !== name
 
         return {
-          name,
           canonicalName,
-          displayName: isLocalAlias ? `${name} → ${canonicalName} (local alias)` : name,
-          isLocalAlias,
-          aliases: relatedNames.filter(candidate => candidate !== name),
           matchNames: buildOllamaMatchNames(relatedNames),
           size: get(colStarts[2], colStarts[3]),
           processor: get(colStarts[3], colStarts[4] > 0 ? colStarts[4] : colStarts[5]),
@@ -438,7 +429,7 @@ async function getOllamaModels(): Promise<OllamaModelStatus[]> {
           until: colStarts[5] > 0 ? get(colStarts[5], line.length) : '',
         }
       })
-      .filter(m => m.name)
+      .filter(m => m.canonicalName)
   } catch {
     return []
   }
