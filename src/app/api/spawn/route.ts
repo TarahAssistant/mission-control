@@ -1,20 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { runClawdbot } from '@/lib/command'
 import { requireRole } from '@/lib/auth'
+import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { config } from '@/lib/config'
 import { readdir, readFile, stat } from 'fs/promises'
 import { join } from 'path'
 import { heavyLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 import { validateBody, spawnAgentSchema } from '@/lib/validation'
+import { scanForInjection } from '@/lib/injection-guard'
+import { logAuditEvent } from '@/lib/db'
 
 function getPreferredToolsProfile(): string {
   return String(process.env.OPENCLAW_TOOLS_PROFILE || 'coding').trim() || 'coding'
-}
-
-async function runSpawnWithCompatibility(spawnPayload: Record<string, unknown>) {
-  const commandArg = `sessions_spawn(${JSON.stringify(spawnPayload)})`
-  return runClawdbot(['-c', commandArg], { timeoutMs: 10000 })
 }
 
 export async function POST(request: NextRequest) {
@@ -29,6 +26,25 @@ export async function POST(request: NextRequest) {
     if ('error' in result) return result.error
     const { task, model, label, timeoutSeconds } = result.data
 
+    // Scan the task prompt and label for injection before sending to an agent
+    const fieldsToScan = [
+      { name: 'task', value: task },
+      ...(label ? [{ name: 'label', value: label }] : []),
+    ]
+    for (const field of fieldsToScan) {
+      const injectionReport = scanForInjection(field.value, { context: 'prompt' })
+      if (!injectionReport.safe) {
+        const criticals = injectionReport.matches.filter(m => m.severity === 'critical')
+        if (criticals.length > 0) {
+          logger.warn({ field: field.name, rules: criticals.map(m => m.rule) }, `Blocked spawn: injection detected in ${field.name}`)
+          return NextResponse.json(
+            { error: `${field.name} blocked: potentially unsafe content detected`, injection: criticals.map(m => ({ rule: m.rule, description: m.description })) },
+            { status: 422 }
+          )
+        }
+      }
+    }
+
     const timeout = timeoutSeconds
 
     // Generate spawn ID
@@ -38,8 +54,8 @@ export async function POST(request: NextRequest) {
     // Using OpenClaw's sessions_spawn function via clawdbot CLI
     const spawnPayload = {
       task,
-      model,
       label,
+      ...(model ? { model } : {}),
       runTimeoutSeconds: timeout,
       tools: {
         profile: getPreferredToolsProfile(),
@@ -47,55 +63,53 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      // Execute the spawn command (OpenClaw 2026.3.2+ defaults tools.profile to messaging).
-      let stdout = ''
-      let stderr = ''
+      // Call gateway sessions_spawn directly. Try with tools.profile first,
+      // fall back without it for older gateways that don't support the field.
+      let result: any
       let compatibilityFallbackUsed = false
       try {
-        const result = await runSpawnWithCompatibility(spawnPayload)
-        stdout = result.stdout
-        stderr = result.stderr
+        result = await callOpenClawGateway('sessions_spawn', spawnPayload, 15_000)
       } catch (firstError: any) {
-        const rawErr = String(firstError?.stderr || firstError?.message || '').toLowerCase()
-        const likelySchemaMismatch =
-          rawErr.includes('unknown field') ||
-          rawErr.includes('unknown key') ||
-          rawErr.includes('invalid argument') ||
-          rawErr.includes('tools') ||
-          rawErr.includes('profile')
-        if (!likelySchemaMismatch) throw firstError
+        const rawErr = String(firstError?.message || '').toLowerCase()
+        const isToolsSchemaError =
+          (rawErr.includes('unknown field') || rawErr.includes('unknown key') || rawErr.includes('invalid argument')) &&
+          (rawErr.includes('tools') || rawErr.includes('profile'))
+        if (!isToolsSchemaError) throw firstError
 
         const fallbackPayload = { ...spawnPayload }
         delete (fallbackPayload as any).tools
-        const fallback = await runSpawnWithCompatibility(fallbackPayload)
-        stdout = fallback.stdout
-        stderr = fallback.stderr
+        result = await callOpenClawGateway('sessions_spawn', fallbackPayload, 15_000)
         compatibilityFallbackUsed = true
       }
 
-      // Parse the response to extract session info
-      let sessionInfo = null
-      try {
-        // Look for session information in stdout
-        const sessionMatch = stdout.match(/Session created: (.+)/)
-        if (sessionMatch) {
-          sessionInfo = sessionMatch[1]
-        }
-      } catch (parseError) {
-        logger.error({ err: parseError }, 'Failed to parse session info')
-      }
+      const sessionInfo = result?.sessionId || result?.session_id || null
+
+      const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
+      logAuditEvent({
+        action: 'agent_spawn',
+        actor: auth.user.username,
+        actor_id: auth.user.id,
+        detail: {
+          spawnId,
+          model: model ?? null,
+          label,
+          task_summary: task.length > 120 ? task.slice(0, 120) + '...' : task,
+          toolsProfile: getPreferredToolsProfile(),
+          compatibilityFallbackUsed,
+        },
+        ip_address: ipAddress,
+      })
 
       return NextResponse.json({
         success: true,
         spawnId,
         sessionInfo,
         task,
-        model,
+        model: model ?? null,
         label,
         timeoutSeconds: timeout,
         createdAt: Date.now(),
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
+        result,
         compatibility: {
           toolsProfile: getPreferredToolsProfile(),
           fallbackUsed: compatibilityFallbackUsed,
@@ -104,13 +118,13 @@ export async function POST(request: NextRequest) {
 
     } catch (execError: any) {
       logger.error({ err: execError }, 'Spawn execution error')
-      
+
       return NextResponse.json({
         success: false,
         spawnId,
         error: execError.message || 'Failed to spawn agent',
         task,
-        model,
+        model: model ?? null,
         label,
         timeoutSeconds: timeout,
         createdAt: Date.now()
@@ -130,6 +144,9 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+
+  const rateCheck = heavyLimiter(request)
+  if (rateCheck) return rateCheck
 
   try {
     const { searchParams } = new URL(request.url)

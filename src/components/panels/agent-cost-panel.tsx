@@ -1,16 +1,24 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslations } from 'next-intl'
+import { Button } from '@/components/ui/button'
+import { Loader } from '@/components/ui/loader'
 import { createClientLogger } from '@/lib/client-logger'
 import {
   PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer,
+  Tooltip, Legend, ResponsiveContainer, BarChart, Bar,
 } from 'recharts'
 
 const log = createClientLogger('AgentCostPanel')
 
+interface TokenStats {
+  totalTokens: number; totalCost: number; requestCount: number
+  avgTokensPerRequest: number; avgCostPerRequest: number
+}
+
 interface AgentCostData {
-  stats: { totalTokens: number; totalCost: number; requestCount: number; avgTokensPerRequest: number; avgCostPerRequest: number }
+  stats: TokenStats
   models: Record<string, { totalTokens: number; totalCost: number; requestCount: number }>
   sessions: string[]
   timeline: Array<{ date: string; cost: number; tokens: number }>
@@ -22,28 +30,315 @@ interface AgentCostsResponse {
   recordCount: number
 }
 
+interface ByAgentModelBreakdown {
+  model: string
+  input_tokens: number
+  output_tokens: number
+  request_count: number
+  cost: number
+}
+
+interface ByAgentEntry {
+  agent: string
+  total_input_tokens: number
+  total_output_tokens: number
+  total_tokens: number
+  total_cost: number
+  session_count: number
+  request_count: number
+  last_active: string
+  models: ByAgentModelBreakdown[]
+}
+
+interface ByAgentResponse {
+  agents: ByAgentEntry[]
+  summary: {
+    total_cost: number
+    total_tokens: number
+    agent_count: number
+    days: number
+  }
+}
+
+interface TaskCostEntry {
+  taskId: number
+  title: string
+  status: string
+  priority: string
+  assignedTo?: string | null
+  project: { id?: number | null; name?: string | null; slug?: string | null; ticketRef?: string | null }
+  stats: TokenStats
+  models: Record<string, TokenStats>
+}
+
+interface TaskCostsResponse {
+  summary: TokenStats
+  tasks: TaskCostEntry[]
+  agents: Record<string, { stats: TokenStats; taskCount: number; taskIds: number[] }>
+  unattributed: TokenStats
+  timeframe: string
+}
+
+type Timeframe = 'hour' | 'day' | 'week' | 'month' | 'previous_month'
+
+const REFRESH_INTERVAL = 30_000 // 30s auto-refresh
+
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658', '#ff6b6b']
 
+function PerAgentBreakdown({
+  data,
+  formatCost,
+  formatNumber,
+  onRefresh,
+}: {
+  data: ByAgentResponse | null
+  formatCost: (cost: number) => string
+  formatNumber: (num: number) => string
+  onRefresh: () => void
+}) {
+  const t = useTranslations('agentCost')
+  const [expandedRow, setExpandedRow] = useState<string | null>(null)
+
+  if (!data || data.agents.length === 0) {
+    return (
+      <div className="text-center text-muted-foreground py-12">
+        <div className="text-lg mb-2">{t('noPerAgentData')}</div>
+        <div className="text-sm">{t('noPerAgentDataSubtitle')}</div>
+        <Button onClick={onRefresh} className="mt-4">{t('refresh')}</Button>
+      </div>
+    )
+  }
+
+  const { agents, summary } = data
+  const maxCost = Math.max(...agents.map((a) => a.total_cost), 0.0001)
+
+  return (
+    <div className="space-y-6">
+      {/* Summary row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-card border border-border rounded-lg p-5">
+          <div className="text-3xl font-bold text-foreground">{summary.agent_count}</div>
+          <div className="text-sm text-muted-foreground">{t('agentCountDB')}</div>
+        </div>
+        <div className="bg-card border border-border rounded-lg p-5">
+          <div className="text-3xl font-bold text-foreground">{formatCost(summary.total_cost)}</div>
+          <div className="text-sm text-muted-foreground">{t('totalCostDays', { days: summary.days })}</div>
+        </div>
+        <div className="bg-card border border-border rounded-lg p-5">
+          <div className="text-3xl font-bold text-foreground">{formatNumber(summary.total_tokens)}</div>
+          <div className="text-sm text-muted-foreground">{t('totalTokens')}</div>
+        </div>
+        <div className="bg-card border border-border rounded-lg p-5">
+          <div className="text-3xl font-bold text-foreground">
+            {summary.total_tokens > 0
+              ? `$${(summary.total_cost / summary.total_tokens * 1000).toFixed(4)}`
+              : '-'}
+          </div>
+          <div className="text-sm text-muted-foreground">{t('avgPer1kTokens')}</div>
+        </div>
+      </div>
+
+      {/* Cost bar chart */}
+      <div className="bg-card border border-border rounded-lg p-6">
+        <h2 className="text-xl font-semibold mb-4">{t('perAgentCostDB')}</h2>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={agents.slice(0, 12).map((a) => ({
+              name: a.agent.length > 12 ? a.agent.slice(0, 11) + '\u2026' : a.agent,
+              cost: Number(a.total_cost.toFixed(4)),
+              input: a.total_input_tokens,
+              output: a.total_output_tokens,
+            }))}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip formatter={(value, dataKey) =>
+                dataKey === 'cost' ? formatCost(Number(value)) : formatNumber(Number(value))
+              } />
+              <Legend />
+              <Bar dataKey="cost" fill="#0088FE" name={t('chartCost')} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Agent detail table */}
+      <div className="bg-card border border-border rounded-lg p-6">
+        <h2 className="text-xl font-semibold mb-4">{t('agentTokenBreakdown')}</h2>
+        <div className="space-y-2 max-h-[600px] overflow-y-auto">
+          {agents.map((agent) => {
+            const costShare = (agent.total_cost / Math.max(summary.total_cost, 0.0001)) * 100
+            const isExpanded = expandedRow === agent.agent
+            return (
+              <div key={agent.agent} className="border border-border rounded-lg overflow-hidden">
+                <Button
+                  onClick={() => setExpandedRow(isExpanded ? null : agent.agent)}
+                  variant="ghost"
+                  className="w-full p-4 h-auto flex items-center justify-between text-left"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="font-medium text-foreground truncate">{agent.agent}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground shrink-0">
+                      {t('sessionCount', { count: agent.session_count })}
+                    </span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500 shrink-0">
+                      {t('requestCount', { count: agent.request_count })}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-4 text-sm shrink-0">
+                    {/* Cost bar indicator */}
+                    <div className="w-24 hidden md:block">
+                      <div className="w-full bg-secondary rounded-full h-2">
+                        <div
+                          className="bg-blue-500 h-2 rounded-full"
+                          style={{ width: `${(agent.total_cost / maxCost) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-medium text-foreground">{formatCost(agent.total_cost)}</div>
+                      <div className="text-xs text-muted-foreground">{costShare.toFixed(1)}%</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-muted-foreground">{formatNumber(agent.total_tokens)}</div>
+                      <div className="text-xs text-muted-foreground">{t('tokens')}</div>
+                    </div>
+                    <svg
+                      className={`w-4 h-4 text-muted-foreground transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                      viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
+                    >
+                      <polyline points="4,6 8,10 12,6" />
+                    </svg>
+                  </div>
+                </Button>
+
+                {isExpanded && (
+                  <div className="px-4 pb-4 border-t border-border bg-secondary/30">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 mb-3">
+                      <div>
+                        <div className="text-xs text-muted-foreground">{t('inputTokens')}</div>
+                        <div className="text-sm font-medium">{formatNumber(agent.total_input_tokens)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">{t('outputTokens')}</div>
+                        <div className="text-sm font-medium">{formatNumber(agent.total_output_tokens)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">{t('ioRatio')}</div>
+                        <div className="text-sm font-medium">
+                          {agent.total_output_tokens > 0
+                            ? (agent.total_input_tokens / agent.total_output_tokens).toFixed(2)
+                            : '-'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground">{t('lastActive')}</div>
+                        <div className="text-sm font-medium">
+                          {new Date(agent.last_active).toLocaleDateString()}
+                        </div>
+                      </div>
+                    </div>
+
+                    {agent.models.length > 0 && (
+                      <div>
+                        <div className="text-xs text-muted-foreground font-medium mb-2">{t('modelBreakdown')}</div>
+                        <div className="space-y-1.5">
+                          {agent.models.map((m) => {
+                            const displayName = m.model.split('/').pop() || m.model
+                            return (
+                              <div key={m.model} className="flex items-center justify-between text-xs">
+                                <span className="text-muted-foreground truncate">{displayName}</span>
+                                <div className="flex gap-4 shrink-0">
+                                  <span>{formatNumber(m.input_tokens)} {t('inSuffix')}</span>
+                                  <span>{formatNumber(m.output_tokens)} {t('outSuffix')}</span>
+                                  <span>{t('reqs', { count: m.request_count })}</span>
+                                  <span className="font-medium text-foreground w-16 text-right">{formatCost(m.cost)}</span>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function AgentCostPanel() {
-  const [selectedTimeframe, setSelectedTimeframe] = useState<'hour' | 'day' | 'week' | 'month'>('day')
+  const t = useTranslations('agentCost')
+  const [selectedTimeframe, setSelectedTimeframe] = useState<Timeframe>('day')
+  const [ignoreSubscriptions, setIgnoreSubscriptions] = useState(false)
   const [data, setData] = useState<AgentCostsResponse | null>(null)
+  const [taskData, setTaskData] = useState<TaskCostsResponse | null>(null)
+  const [byAgentData, setByAgentData] = useState<ByAgentResponse | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null)
+  const [expandedSection, setExpandedSection] = useState<'models' | 'tasks'>('tasks')
+  const [activeView, setActiveView] = useState<'overview' | 'per-agent'>('overview')
+  const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const getTimeframeLabel = useCallback((timeframe: Timeframe): string => {
+    switch (timeframe) {
+      case 'hour':
+        return t('timeframeHour')
+      case 'day':
+        return t('timeframeDay')
+      case 'week':
+        return t('timeframeWeek')
+      case 'month':
+        return 'Last 30d'
+      case 'previous_month':
+        return 'Previous month'
+      default:
+        return timeframe
+    }
+  }, [t])
+
+  const timeframeLabel = getTimeframeLabel(selectedTimeframe)
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
     try {
-      const res = await fetch(`/api/tokens?action=agent-costs&timeframe=${selectedTimeframe}`)
-      const json = await res.json()
-      setData(json)
+      const [agentRes, taskRes, byAgentRes] = await Promise.all([
+        fetch(`/api/tokens?action=agent-costs&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens?action=task-costs&timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
+        fetch(`/api/tokens/by-agent?timeframe=${selectedTimeframe}&ignoreSubscriptions=${ignoreSubscriptions}`),
+      ])
+      const [agentJson, taskJson, byAgentJson] = await Promise.all([
+        agentRes.json(), taskRes.json(), byAgentRes.json(),
+      ])
+      setData(agentJson)
+      setTaskData(taskJson)
+      setByAgentData(byAgentJson)
     } catch (err) {
       log.error('Failed to load agent costs:', err)
     } finally {
       setIsLoading(false)
     }
-  }, [selectedTimeframe])
+  }, [selectedTimeframe, ignoreSubscriptions])
 
   useEffect(() => { loadData() }, [loadData])
+
+  // Auto-refresh every 30s
+  useEffect(() => {
+    refreshTimer.current = setInterval(loadData, REFRESH_INTERVAL)
+    return () => { if (refreshTimer.current) clearInterval(refreshTimer.current) }
+  }, [loadData])
+
+  // Helper: get tasks for a specific agent from task-costs data
+  const getAgentTasks = useCallback((agentName: string): TaskCostEntry[] => {
+    if (!taskData) return []
+    const agentEntry = taskData.agents[agentName]
+    if (!agentEntry) return []
+    return taskData.tasks.filter(t => agentEntry.taskIds.includes(t.taskId))
+  }, [taskData])
 
   const formatNumber = (num: number) => {
     if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M'
@@ -104,64 +399,103 @@ export function AgentCostPanel() {
       <div className="border-b border-border pb-4">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-foreground">Agent Cost Breakdown</h1>
-            <p className="text-muted-foreground mt-2">Per-agent token usage and spend analysis</p>
+            <h1 className="text-3xl font-bold text-foreground">{t('title')}</h1>
+            <p className="text-muted-foreground mt-2">{t('subtitle')}</p>
           </div>
-          <div className="flex space-x-2">
-            {(['hour', 'day', 'week', 'month'] as const).map((tf) => (
-              <button
-                key={tf}
-                onClick={() => setSelectedTimeframe(tf)}
-                className={`px-4 py-2 text-sm rounded-md font-medium transition-colors ${
-                  selectedTimeframe === tf
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80'
-                }`}
+          <div className="flex items-center gap-4">
+            <div className="flex space-x-1 bg-secondary rounded-lg p-1">
+              <Button
+                onClick={() => setActiveView('overview')}
+                variant={activeView === 'overview' ? 'default' : 'ghost'}
+                size="sm"
               >
-                {tf.charAt(0).toUpperCase() + tf.slice(1)}
-              </button>
-            ))}
+                {t('viewOverview')}
+              </Button>
+              <Button
+                onClick={() => setActiveView('per-agent')}
+                variant={activeView === 'per-agent' ? 'default' : 'ghost'}
+                size="sm"
+              >
+                {t('viewPerAgentDB')}
+              </Button>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1">
+              <span className="text-[11px] text-muted-foreground">Cost mode</span>
+              <div className="flex rounded-md border border-border overflow-hidden">
+                <button
+                  onClick={() => setIgnoreSubscriptions(false)}
+                  className={`px-2 py-1 text-[11px] font-medium transition-colors ${!ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+                >
+                  Adjusted
+                </button>
+                <button
+                  onClick={() => setIgnoreSubscriptions(true)}
+                  className={`px-2 py-1 text-[11px] font-medium transition-colors ${ignoreSubscriptions ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+                >
+                  Raw
+                </button>
+              </div>
+            </div>
+            <div className="flex space-x-2">
+              {(['hour', 'day', 'week', 'month', 'previous_month'] as const).map((tf) => (
+                <Button
+                  key={tf}
+                  onClick={() => setSelectedTimeframe(tf)}
+                  variant={selectedTimeframe === tf ? 'default' : 'secondary'}
+                >
+                  {getTimeframeLabel(tf)}
+                </Button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
 
       {isLoading ? (
-        <div className="flex items-center justify-center h-32">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-          <span className="ml-3 text-muted-foreground">Loading agent costs...</span>
-        </div>
+        <Loader variant="panel" label={t('loadingAgentCosts')} />
+      ) : activeView === 'per-agent' ? (
+        <PerAgentBreakdown data={byAgentData} formatCost={formatCost} formatNumber={formatNumber} onRefresh={loadData} />
       ) : !data || agents.length === 0 ? (
         <div className="text-center text-muted-foreground py-12">
-          <div className="text-lg mb-2">No agent cost data available</div>
-          <div className="text-sm">Cost data will appear once agents start using tokens</div>
-          <button onClick={loadData} className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors">
-            Refresh
-          </button>
+          <div className="text-lg mb-2">{t('noAgentCostData')}</div>
+          <div className="text-sm">{t('noAgentCostSubtitle')}</div>
+          <Button onClick={loadData} className="mt-4">
+            {t('refresh')}
+          </Button>
         </div>
       ) : (
         <div className="space-y-6">
           {/* Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div className="bg-card border border-border rounded-lg p-6">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="bg-card border border-border rounded-lg p-5">
               <div className="text-3xl font-bold text-foreground">{totalAgents}</div>
-              <div className="text-sm text-muted-foreground">Total Agents</div>
+              <div className="text-sm text-muted-foreground">{t('activeAgents')}</div>
             </div>
-            <div className="bg-card border border-border rounded-lg p-6">
+            <div className="bg-card border border-border rounded-lg p-5">
               <div className="text-3xl font-bold text-foreground">{formatCost(totalCost)}</div>
-              <div className="text-sm text-muted-foreground">Total Cost ({selectedTimeframe})</div>
+              <div className="text-sm text-muted-foreground">{t('totalCost', { timeframe: timeframeLabel })}</div>
             </div>
-            <div className="bg-card border border-border rounded-lg p-6">
-              <div className="text-3xl font-bold text-orange-500">{mostExpensive?.[0] || '-'}</div>
-              <div className="text-sm text-muted-foreground">Most Expensive Agent</div>
-              {mostExpensive && <div className="text-xs text-muted-foreground mt-1">{formatCost(mostExpensive[1].stats.totalCost)}</div>}
+            <div className="bg-card border border-border rounded-lg p-5">
+              <div className="text-3xl font-bold text-orange-500 truncate">{mostExpensive?.[0] || '-'}</div>
+              <div className="text-sm text-muted-foreground">{t('mostExpensive')}</div>
+              {mostExpensive && <div className="text-xs text-muted-foreground mt-1">{formatCost(mostExpensive[1].stats.totalCost)} ({((mostExpensive[1].stats.totalCost / Math.max(totalCost, 0.0001)) * 100).toFixed(0)}%)</div>}
             </div>
-            <div className="bg-card border border-border rounded-lg p-6">
-              <div className="text-3xl font-bold text-green-500">{mostEfficient?.[0] || '-'}</div>
-              <div className="text-sm text-muted-foreground">Most Efficient Agent</div>
+            <div className="bg-card border border-border rounded-lg p-5">
+              <div className="text-3xl font-bold text-green-500 truncate">{mostEfficient?.[0] || '-'}</div>
+              <div className="text-sm text-muted-foreground">{t('mostEfficient')}</div>
               {mostEfficient && (
                 <div className="text-xs text-muted-foreground mt-1">
                   ${(mostEfficient[1].stats.totalCost / Math.max(1, mostEfficient[1].stats.totalTokens) * 1000).toFixed(4)}/1K tokens
                 </div>
+              )}
+            </div>
+            <div className="bg-card border border-border rounded-lg p-5">
+              <div className="text-3xl font-bold text-foreground">
+                {taskData ? `${((1 - taskData.unattributed.totalCost / Math.max(totalCost, 0.0001)) * 100).toFixed(0)}%` : '-'}
+              </div>
+              <div className="text-sm text-muted-foreground">{t('taskAttributed')}</div>
+              {taskData && taskData.unattributed.totalCost > 0 && (
+                <div className="text-xs text-muted-foreground mt-1">{t('unattributed', { cost: formatCost(taskData.unattributed.totalCost) })}</div>
               )}
             </div>
           </div>
@@ -170,10 +504,10 @@ export function AgentCostPanel() {
           <div className="grid lg:grid-cols-2 gap-6">
             {/* Cost Distribution Pie */}
             <div className="bg-card border border-border rounded-lg p-6">
-              <h2 className="text-xl font-semibold mb-4">Cost Distribution by Agent</h2>
+              <h2 className="text-xl font-semibold mb-4">{t('costDistributionByAgent')}</h2>
               <div className="h-64">
                 {pieData.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-muted-foreground text-sm">No cost data</div>
+                  <div className="h-full flex items-center justify-center text-muted-foreground text-sm">{t('noCostData')}</div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
@@ -192,10 +526,10 @@ export function AgentCostPanel() {
 
             {/* Cost Trend Lines */}
             <div className="bg-card border border-border rounded-lg p-6">
-              <h2 className="text-xl font-semibold mb-4">Cost Trends (Top 5 Agents)</h2>
+              <h2 className="text-xl font-semibold mb-4">{t('costTrends')}</h2>
               <div className="h-64">
                 {trendData.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-muted-foreground text-sm">No trend data</div>
+                  <div className="h-full flex items-center justify-center text-muted-foreground text-sm">{t('noTrendData')}</div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={trendData}>
@@ -214,9 +548,35 @@ export function AgentCostPanel() {
             </div>
           </div>
 
+          {/* Agent Cost Comparison Bar Chart */}
+          {sortedAgents.length > 1 && (
+            <div className="bg-card border border-border rounded-lg p-6">
+              <h2 className="text-xl font-semibold mb-4">{t('costComparison')}</h2>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={sortedAgents.slice(0, 10).map(([name, a]) => ({
+                    name: name.length > 12 ? name.slice(0, 11) + '…' : name,
+                    cost: Number(a.stats.totalCost.toFixed(4)),
+                    tokens: a.stats.totalTokens,
+                    requests: a.stats.requestCount,
+                  }))}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(value, dataKey) =>
+                      dataKey === 'cost' ? formatCost(Number(value)) : formatNumber(Number(value))
+                    } />
+                    <Legend />
+                    <Bar dataKey="cost" fill="#0088FE" name={t('chartCost')} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
           {/* Cost Efficiency Comparison */}
           <div className="bg-card border border-border rounded-lg p-6">
-            <h2 className="text-xl font-semibold mb-4">Cost Efficiency ($/1K Tokens per Agent)</h2>
+            <h2 className="text-xl font-semibold mb-4">{t('costEfficiency')}</h2>
             <div className="space-y-2">
               {efficiencyData.map(({ name, costPer1k }) => (
                 <div key={name} className="flex items-center text-sm">
@@ -237,65 +597,133 @@ export function AgentCostPanel() {
 
           {/* Agent Cost Ranking Table */}
           <div className="bg-card border border-border rounded-lg p-6">
-            <h2 className="text-xl font-semibold mb-4">Agent Cost Ranking</h2>
-            <div className="space-y-2 max-h-[500px] overflow-y-auto">
-              {sortedAgents.map(([name, a], index) => (
-                <div key={name} className="border border-border rounded-lg overflow-hidden">
-                  <button
-                    onClick={() => setExpandedAgent(expandedAgent === name ? null : name)}
-                    className="w-full p-4 flex items-center justify-between hover:bg-secondary/50 transition-colors text-left"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-muted-foreground w-6">#{index + 1}</span>
-                      <span className="font-medium text-foreground">{name}</span>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
-                        {a.sessions.length} session{a.sessions.length !== 1 ? 's' : ''}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-6 text-sm">
-                      <div className="text-right">
-                        <div className="font-medium text-foreground">{formatCost(a.stats.totalCost)}</div>
-                        <div className="text-xs text-muted-foreground">{formatNumber(a.stats.totalTokens)} tokens</div>
+            <h2 className="text-xl font-semibold mb-4">{t('agentCostRanking')}</h2>
+            <div className="space-y-2 max-h-[600px] overflow-y-auto">
+              {sortedAgents.map(([name, a], index) => {
+                const costShare = ((a.stats.totalCost / Math.max(totalCost, 0.0001)) * 100)
+                const agentTasks = getAgentTasks(name)
+                return (
+                  <div key={name} className="border border-border rounded-lg overflow-hidden">
+                    <Button
+                      onClick={() => setExpandedAgent(expandedAgent === name ? null : name)}
+                      variant="ghost"
+                      className="w-full p-4 h-auto flex items-center justify-between text-left"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-muted-foreground w-6">#{index + 1}</span>
+                        <span className="font-medium text-foreground">{name}</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
+                          {t('sessionCount', { count: a.sessions.length })}
+                        </span>
+                        {agentTasks.length > 0 && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500">
+                            {t('tasksTab', { count: agentTasks.length })}
+                          </span>
+                        )}
                       </div>
-                      <div className="text-right">
-                        <div className="text-muted-foreground">{a.stats.requestCount} reqs</div>
-                        <div className="text-xs text-muted-foreground">{formatCost(a.stats.avgCostPerRequest)} avg</div>
-                      </div>
-                      <svg
-                        className={`w-4 h-4 text-muted-foreground transition-transform ${expandedAgent === name ? 'rotate-180' : ''}`}
-                        viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
-                      >
-                        <polyline points="4,6 8,10 12,6" />
-                      </svg>
-                    </div>
-                  </button>
-
-                  {expandedAgent === name && (
-                    <div className="px-4 pb-4 border-t border-border bg-secondary/30">
-                      <div className="pt-3 text-sm">
-                        <h4 className="font-medium text-muted-foreground mb-2">Model Breakdown</h4>
-                        <div className="space-y-1.5">
-                          {Object.entries(a.models)
-                            .sort(([, x], [, y]) => y.totalCost - x.totalCost)
-                            .map(([model, stats]) => {
-                              const displayName = model.split('/').pop() || model
-                              return (
-                                <div key={model} className="flex items-center justify-between text-xs">
-                                  <span className="text-muted-foreground">{displayName}</span>
-                                  <div className="flex gap-4">
-                                    <span>{formatNumber(stats.totalTokens)} tokens</span>
-                                    <span>{stats.requestCount} reqs</span>
-                                    <span className="font-medium text-foreground">{formatCost(stats.totalCost)}</span>
-                                  </div>
-                                </div>
-                              )
-                            })}
+                      <div className="flex items-center gap-6 text-sm">
+                        <div className="text-right">
+                          <div className="font-medium text-foreground">{formatCost(a.stats.totalCost)}</div>
+                          <div className="text-xs text-muted-foreground">{t('ofTotal', { pct: costShare.toFixed(1) })}</div>
                         </div>
+                        <div className="text-right">
+                          <div className="text-muted-foreground">{formatNumber(a.stats.totalTokens)} {t('tokens')}</div>
+                          <div className="text-xs text-muted-foreground">{t('reqs', { count: a.stats.requestCount })}</div>
+                        </div>
+                        <svg
+                          className={`w-4 h-4 text-muted-foreground transition-transform ${expandedAgent === name ? 'rotate-180' : ''}`}
+                          viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
+                        >
+                          <polyline points="4,6 8,10 12,6" />
+                        </svg>
                       </div>
-                    </div>
-                  )}
-                </div>
-              ))}
+                    </Button>
+
+                    {expandedAgent === name && (
+                      <div className="px-4 pb-4 border-t border-border bg-secondary/30">
+                        {/* Tab switcher for expanded content */}
+                        <div className="flex gap-2 pt-3 mb-3">
+                          <Button
+                            variant={expandedSection === 'tasks' ? 'default' : 'ghost'}
+                            size="sm"
+                            onClick={(e) => { e.stopPropagation(); setExpandedSection('tasks') }}
+                          >
+                            {t('tasksTab', { count: agentTasks.length })}
+                          </Button>
+                          <Button
+                            variant={expandedSection === 'models' ? 'default' : 'ghost'}
+                            size="sm"
+                            onClick={(e) => { e.stopPropagation(); setExpandedSection('models') }}
+                          >
+                            {t('modelsTab', { count: Object.keys(a.models).length })}
+                          </Button>
+                        </div>
+
+                        {expandedSection === 'tasks' && (
+                          <div className="text-sm">
+                            {agentTasks.length === 0 ? (
+                              <div className="text-xs text-muted-foreground italic py-2">{t('noTaskCosts')}</div>
+                            ) : (
+                              <div className="space-y-1.5">
+                                {agentTasks.map((task) => {
+                                  const taskShare = ((task.stats.totalCost / Math.max(a.stats.totalCost, 0.0001)) * 100)
+                                  return (
+                                    <div key={task.taskId} className="flex items-center justify-between text-xs">
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                          task.priority === 'critical' ? 'bg-red-500/10 text-red-500' :
+                                          task.priority === 'high' ? 'bg-orange-500/10 text-orange-500' :
+                                          task.priority === 'medium' ? 'bg-yellow-500/10 text-yellow-500' :
+                                          'bg-secondary text-muted-foreground'
+                                        }`}>{task.priority}</span>
+                                        {task.project.ticketRef && (
+                                          <span className="text-muted-foreground font-mono">{task.project.ticketRef}</span>
+                                        )}
+                                        <span className="text-foreground truncate">{task.title}</span>
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                                          task.status === 'done' ? 'bg-green-500/10 text-green-500' :
+                                          task.status === 'in_progress' ? 'bg-blue-500/10 text-blue-500' :
+                                          'bg-secondary text-muted-foreground'
+                                        }`}>{task.status}</span>
+                                      </div>
+                                      <div className="flex gap-3 ml-2 shrink-0">
+                                        <span className="text-muted-foreground">{taskShare.toFixed(0)}%</span>
+                                        <span className="font-medium text-foreground w-16 text-right">{formatCost(task.stats.totalCost)}</span>
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {expandedSection === 'models' && (
+                          <div className="text-sm">
+                            <div className="space-y-1.5">
+                              {Object.entries(a.models)
+                                .sort(([, x], [, y]) => y.totalCost - x.totalCost)
+                                .map(([model, stats]) => {
+                                  const displayName = model.split('/').pop() || model
+                                  return (
+                                    <div key={model} className="flex items-center justify-between text-xs">
+                                      <span className="text-muted-foreground">{displayName}</span>
+                                      <div className="flex gap-4">
+                                        <span>{formatNumber(stats.totalTokens)} {t('tokens')}</span>
+                                        <span>{t('reqs', { count: stats.requestCount })}</span>
+                                        <span className="font-medium text-foreground">{formatCost(stats.totalCost)}</span>
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>

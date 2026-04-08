@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslations } from 'next-intl'
+import { Button } from '@/components/ui/button'
 
 interface EnvVarInfo {
   redacted: string
@@ -16,6 +18,7 @@ interface Integration {
   status: 'connected' | 'partial' | 'not_configured'
   vaultItem: string | null
   testable: boolean
+  recommendation?: string | null
 }
 
 interface Category {
@@ -24,6 +27,7 @@ interface Category {
 }
 
 export function IntegrationsPanel() {
+  const t = useTranslations('integrations')
   const [integrations, setIntegrations] = useState<Integration[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [opAvailable, setOpAvailable] = useState(false)
@@ -223,7 +227,7 @@ export function IntegrationsPanel() {
     return (
       <div className="p-6 flex items-center gap-2">
         <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-        <span className="text-sm text-muted-foreground">Loading integrations...</span>
+        <span className="text-sm text-muted-foreground">{t('loading')}</span>
       </div>
     )
   }
@@ -245,9 +249,9 @@ export function IntegrationsPanel() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-foreground">Integrations</h2>
+          <h2 className="text-lg font-semibold text-foreground">{t('title')}</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {connectedCount} of {integrations.length} connected
+            {t('connectedCount', { connected: connectedCount, total: integrations.length })}
             {envPath && <span className="ml-2 font-mono text-muted-foreground/50">{envPath}</span>}
           </p>
         </div>
@@ -258,10 +262,12 @@ export function IntegrationsPanel() {
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                 1P CLI
               </span>
-              <button
+              <Button
                 onClick={handlePullAll}
                 disabled={pullingAll}
-                className="px-3 py-1.5 text-xs rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors flex items-center gap-1.5"
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-1.5"
                 title="Pull all vault-backed integrations in this category from 1Password"
               >
                 {pullingAll ? (
@@ -272,29 +278,28 @@ export function IntegrationsPanel() {
                     <path d="M3 12v2h10v-2" />
                   </svg>
                 )}
-                Pull All
-              </button>
+                {t('pullAll')}
+              </Button>
             </>
           )}
           {hasChanges && (
-            <button
+            <Button
               onClick={handleDiscard}
-              className="px-3 py-1.5 text-xs rounded-md border border-border text-muted-foreground hover:text-foreground transition-colors"
+              variant="outline"
+              size="sm"
             >
-              Discard
-            </button>
+              {t('discard')}
+            </Button>
           )}
-          <button
+          <Button
             onClick={handleSave}
             disabled={!hasChanges || saving}
-            className={`px-4 py-1.5 text-xs rounded-md font-medium transition-colors ${
-              hasChanges
-                ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                : 'bg-muted text-muted-foreground cursor-not-allowed'
-            }`}
+            variant={hasChanges ? 'default' : 'secondary'}
+            size="sm"
+            className={!hasChanges ? 'cursor-not-allowed' : ''}
           >
-            {saving ? 'Saving...' : 'Save Changes'}
-          </button>
+            {saving ? t('saving') : t('saveChanges')}
+          </Button>
         </div>
       </div>
 
@@ -313,13 +318,15 @@ export function IntegrationsPanel() {
           const catIntegrations = integrations.filter(i => i.category === cat.id)
           const catConnected = catIntegrations.filter(i => i.status === 'connected').length
           return (
-            <button
+            <Button
               key={cat.id}
               onClick={() => setActiveCategory(cat.id)}
-              className={`px-3 py-2 text-xs font-medium rounded-t-md transition-colors relative whitespace-nowrap ${
+              variant="ghost"
+              size="sm"
+              className={`rounded-t-md rounded-b-none relative whitespace-nowrap ${
                 activeCategory === cat.id
                   ? 'bg-card text-foreground border border-border border-b-card -mb-px'
-                  : 'text-muted-foreground hover:text-foreground'
+                  : ''
               }`}
             >
               {cat.label}
@@ -328,7 +335,7 @@ export function IntegrationsPanel() {
                   {catConnected}
                 </span>
               )}
-            </button>
+            </Button>
           )
         })}
       </div>
@@ -359,7 +366,7 @@ export function IntegrationsPanel() {
         ))}
         {filteredIntegrations.length === 0 && (
           <div className="text-sm text-muted-foreground text-center py-8">
-            No integrations in this category
+            {t('noIntegrationsInCategory')}
           </div>
         )}
       </div>
@@ -371,19 +378,20 @@ export function IntegrationsPanel() {
           <span className="text-xs text-foreground">
             {Object.keys(edits).length} unsaved change{Object.keys(edits).length === 1 ? '' : 's'}
           </span>
-          <button
+          <Button
             onClick={handleDiscard}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            variant="ghost"
+            size="xs"
           >
-            Discard
-          </button>
-          <button
+            {t('discard')}
+          </Button>
+          <Button
             onClick={handleSave}
             disabled={saving}
-            className="px-3 py-1 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
+            size="xs"
           >
-            {saving ? 'Saving...' : 'Save'}
-          </button>
+            {saving ? t('saving') : t('save')}
+          </Button>
         </div>
       )}
 
@@ -391,30 +399,30 @@ export function IntegrationsPanel() {
       {confirmRemove && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-card border border-border rounded-lg shadow-xl p-5 max-w-sm mx-4 space-y-4">
-            <h3 className="text-sm font-semibold text-foreground">Remove integration?</h3>
+            <h3 className="text-sm font-semibold text-foreground">{t('removeTitle')}</h3>
             <p className="text-xs text-muted-foreground">
-              This will remove {confirmRemove.keys.length === 1 ? (
-                <span className="font-mono text-foreground">{confirmRemove.keys[0]}</span>
-              ) : (
-                <span>{confirmRemove.keys.length} variables</span>
-              )} from the .env file. The gateway must be restarted for changes to take effect.
+              {t('removeDescription', {
+                target: confirmRemove.keys.length === 1 ? confirmRemove.keys[0] : String(confirmRemove.keys.length)
+              })}
             </p>
             <div className="flex justify-end gap-2">
-              <button
+              <Button
                 onClick={() => setConfirmRemove(null)}
-                className="px-3 py-1.5 text-xs rounded-md border border-border text-muted-foreground hover:text-foreground transition-colors"
+                variant="outline"
+                size="sm"
               >
-                Cancel
-              </button>
-              <button
+                {t('cancel')}
+              </Button>
+              <Button
                 onClick={() => {
                   handleRemove(confirmRemove.keys)
                   setConfirmRemove(null)
                 }}
-                className="px-3 py-1.5 text-xs rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 font-medium transition-colors"
+                variant="destructive"
+                size="sm"
               >
-                Remove
-              </button>
+                {t('remove')}
+              </Button>
             </div>
           </div>
         </div>
@@ -454,6 +462,7 @@ function IntegrationCard({
   onPull: () => void
   onRemove: () => void
 }) {
+  const t = useTranslations('integrations')
   const statusColors = {
     connected: 'bg-green-500',
     partial: 'bg-amber-500',
@@ -486,11 +495,13 @@ function IntegrationCard({
         <div className="flex items-center gap-1.5">
           {/* Pull from 1Password */}
           {integration.vaultItem && opAvailable && (
-            <button
+            <Button
               onClick={onPull}
               disabled={pulling}
               title="Pull from 1Password"
-              className="px-2 py-1 text-2xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors flex items-center gap-1"
+              variant="outline"
+              size="xs"
+              className="text-2xs flex items-center gap-1"
             >
               {pulling ? (
                 <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
@@ -501,16 +512,18 @@ function IntegrationCard({
                 </svg>
               )}
               1P
-            </button>
+            </Button>
           )}
 
           {/* Test connection */}
           {integration.testable && hasSetVars && (
-            <button
+            <Button
               onClick={onTest}
               disabled={testing}
               title="Test connection"
-              className="px-2 py-1 text-2xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors flex items-center gap-1"
+              variant="outline"
+              size="xs"
+              className="text-2xs flex items-center gap-1"
             >
               {testing ? (
                 <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
@@ -522,18 +535,20 @@ function IntegrationCard({
                 </svg>
               )}
               Test
-            </button>
+            </Button>
           )}
 
           {/* Remove */}
           {hasSetVars && (
-            <button
+            <Button
               onClick={onRemove}
               title="Remove from .env"
-              className="px-2 py-1 text-2xs rounded border border-border text-muted-foreground hover:text-destructive hover:border-destructive/50 transition-colors"
+              variant="outline"
+              size="xs"
+              className="text-2xs hover:text-destructive hover:border-destructive/50"
             >
-              Remove
-            </button>
+              {t('remove')}
+            </Button>
           )}
         </div>
       </div>
@@ -564,48 +579,80 @@ function IntegrationCard({
                 ) : info.set ? (
                   <span className="text-xs font-mono text-muted-foreground">{info.redacted}</span>
                 ) : (
-                  <span className="text-xs text-muted-foreground/50 italic">not set</span>
+                  <span className="text-xs text-muted-foreground/50 italic">{t('notSet')}</span>
                 )}
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
                 {/* Reveal toggle (only when editing) */}
                 {isEditing && (
-                  <button
+                  <Button
                     onClick={() => onToggleReveal(envKey)}
                     title={isRevealed ? 'Hide value' : 'Show value'}
-                    className="p-1 text-muted-foreground hover:text-foreground transition-colors"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="w-6 h-6"
                   >
                     {isRevealed ? <EyeOffIcon /> : <EyeIcon />}
-                  </button>
+                  </Button>
                 )}
 
                 {/* Edit button */}
                 {!isEditing && (
-                  <button
+                  <Button
                     onClick={() => onEdit(envKey, '')}
                     title="Edit value"
-                    className="p-1 text-muted-foreground hover:text-foreground transition-colors"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="w-6 h-6"
                   >
                     <EditIcon />
-                  </button>
+                  </Button>
                 )}
 
                 {/* Cancel edit */}
                 {isEditing && (
-                  <button
+                  <Button
                     onClick={() => onCancelEdit(envKey)}
                     title="Cancel edit"
-                    className="p-1 text-muted-foreground hover:text-destructive transition-colors"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="w-6 h-6 hover:text-destructive"
                   >
                     <XIcon />
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
           )
         })}
       </div>
+
+      {integration.recommendation && (
+        <div className="mt-3 rounded-md border border-border/60 bg-secondary/30 px-2.5 py-2">
+          <p className="text-2xs text-muted-foreground">{integration.recommendation}</p>
+          {integration.id === 'x_twitter' && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-2xs">
+              <a
+                href="https://github.com/0xNyk/xint"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline"
+              >
+                github.com/0xNyk/xint
+              </a>
+              <a
+                href="https://github.com/0xNyk/xint-rs"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline"
+              >
+                github.com/0xNyk/xint-rs
+              </a>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

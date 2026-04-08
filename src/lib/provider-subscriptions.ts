@@ -154,6 +154,69 @@ function detectFromEnv(): Record<string, ProviderSubscription> {
   return active
 }
 
+function detectXAISubscription(): ProviderSubscription | null {
+  // xAI subscription detection — IMPORTANT: API key access is PAY-PER-USE,
+  // not a free subscription. Only OAuth-based access should be treated as subscribed.
+  
+  // Check env vars for explicit subscription type override
+  const xaiSubType = process.env.XAI_SUBSCRIPTION_TYPE || process.env.MC_XAI_SUBSCRIPTION_TYPE
+  if (xaiSubType && isPositiveSubscription(xaiSubType)) {
+    return { provider: 'xai', type: normalizeType(xaiSubType), source: 'env' }
+  }
+
+  // Check OpenCode auth for OAuth-based xAI access (would be free/subscribed)
+  // Note: this is already handled by detectFromOpenCodeAuth(), so we only
+  // need to check OpenClaw config here.
+
+  // Check OpenClaw config for xAI provider auth
+  try {
+    const openclawConfigPath = path.join(config.openclawStateDir, 'openclaw.json')
+    const openclawConfig = parseJsonFile(openclawConfigPath) as Record<string, any> | null
+    if (openclawConfig) {
+      const xaiProfile = openclawConfig?.auth?.profiles?.['xai:default']
+      if (xaiProfile?.provider === 'xai') {
+        // Only treat OAuth-based access as a subscription.
+        // API key mode = pay-per-use, should NOT zero out costs.
+        if (xaiProfile.mode === 'oauth') {
+          return { provider: 'xai', type: 'oauth', source: 'file' }
+        }
+        // api_key mode — detected but NOT a subscription (costs apply)
+        return null
+      }
+    }
+  } catch {}
+
+  // An API key in env means xAI is available but NOT free — don't return a subscription
+  // (We still want the provider to appear in the system, just not as "subscribed")
+  return null
+}
+
+function detectFromOpenCodeAuth(): Record<string, ProviderSubscription> {
+  const authPath = path.join(os.homedir(), '.local/share/opencode', 'auth.json')
+  const auth = parseJsonFile(authPath) as Record<string, any> | null
+  if (!auth) return {}
+
+  const active: Record<string, ProviderSubscription> = {}
+  
+  // If the user has authenticated via OAuth in OpenCode, we treat those providers as subscribed/free-access
+  if (auth.google && (auth.google.access || auth.google.refresh)) {
+    active.google = { provider: 'google', type: 'oauth', source: 'file' }
+  }
+  if (auth.anthropic && (auth.anthropic.access || auth.anthropic.refresh)) {
+    active.anthropic = { provider: 'anthropic', type: 'oauth', source: 'file' }
+  }
+  if (auth.openai && (auth.openai.access || auth.openai.refresh)) {
+    active.openai = { provider: 'openai', type: 'oauth', source: 'file' }
+  }
+  if (auth.xai && (auth.xai.access || auth.xai.refresh)) {
+    // Only treat OAuth-based xAI access as subscribed (free).
+    // API key access is pay-per-use and should NOT be treated as a subscription.
+    active.xai = { provider: 'xai', type: 'oauth', source: 'file' }
+  }
+  
+  return active
+}
+
 export function detectProviderSubscriptions(forceRefresh = false): SubscriptionDetectionResult {
   const now = Date.now()
   if (!forceRefresh && detectionCache && (now - detectionCache.ts) < CACHE_TTL_MS) {
@@ -162,11 +225,19 @@ export function detectProviderSubscriptions(forceRefresh = false): SubscriptionD
 
   const active = detectFromEnv()
 
+  // Merge subscriptions from OpenCode auth
+  const opencode = detectFromOpenCodeAuth()
+  Object.assign(active, opencode)
+
   const anthropic = detectAnthropicFromFile()
   if (anthropic) active.anthropic = anthropic
 
   const openai = detectOpenAIFromFile()
   if (openai) active.openai = openai
+
+  // xAI/Grok: detect from env var, OpenCode auth, or OpenClaw config
+  const xai = detectXAISubscription()
+  if (xai && !active.xai) active.xai = xai
 
   const value = { active }
   detectionCache = { ts: now, value }
@@ -190,15 +261,16 @@ export function getProviderFromModel(modelName: string): string {
   if (!normalized) return 'unknown'
 
   const [prefix] = normalized.split('/')
+  
+  if (normalized.includes('claude')) return 'anthropic'
+  if (normalized.includes('gpt') || normalized.includes('codex') || normalized.includes('o1') || normalized.includes('o3')) return 'openai'
+  if (normalized.includes('gemini')) return 'google'
+  if (normalized.includes('grok')) return 'xai'
+
   if (prefix && !prefix.includes(':')) {
     // Most models are provider-prefixed, e.g., "anthropic/claude-sonnet-4-5".
-    if (prefix === 'claude') return 'anthropic'
-    if (prefix === 'gpt' || prefix === 'o1' || prefix === 'o3') return 'openai'
     return prefix
   }
 
-  if (normalized.includes('claude')) return 'anthropic'
-  if (normalized.includes('gpt') || normalized.includes('codex') || normalized.includes('o1') || normalized.includes('o3')) return 'openai'
   return 'unknown'
 }
-

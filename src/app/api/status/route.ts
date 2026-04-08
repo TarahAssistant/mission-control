@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import net from 'node:net'
 import os from 'node:os'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, statSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { runCommand, runOpenClaw, runClawdbot } from '@/lib/command'
 import { config } from '@/lib/config'
@@ -11,8 +11,18 @@ import { requireRole } from '@/lib/auth'
 import { MODEL_CATALOG } from '@/lib/models'
 import { logger } from '@/lib/logger'
 import { detectProviderSubscriptions, getPrimarySubscription } from '@/lib/provider-subscriptions'
+import { APP_VERSION } from '@/lib/version'
+import { isHermesInstalled, scanHermesSessions } from '@/lib/hermes-sessions'
+import { registerMcAsDashboard } from '@/lib/gateway-runtime'
 
 export async function GET(request: NextRequest) {
+  // Docker/Kubernetes health probes must work without auth/cookies.
+  const preAction = new URL(request.url).searchParams.get('action') || 'overview'
+  if (preAction === 'health') {
+    const health = await performHealthCheck()
+    return NextResponse.json(health)
+  }
+
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
@@ -46,7 +56,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (action === 'capabilities') {
-      const capabilities = await getCapabilities()
+      const capabilities = await getCapabilities(request)
       return NextResponse.json(capabilities)
     }
 
@@ -68,6 +78,58 @@ async function getDashboardData(workspaceId: number) {
   ])
 
   return { ...system, db: dbStats }
+}
+
+async function getMemorySnapshot() {
+  const totalBytes = os.totalmem()
+  let availableBytes = os.freemem()
+
+  if (process.platform === 'darwin') {
+    try {
+      const { stdout } = await runCommand('vm_stat', [], { timeoutMs: 3000 })
+      const pageSizeMatch = stdout.match(/page size of (\d+) bytes/i)
+      const pageSize = parseInt(pageSizeMatch?.[1] || '4096', 10)
+      const pageLabels = ['Pages free', 'Pages inactive', 'Pages speculative', 'Pages purgeable']
+
+      const availablePages = pageLabels.reduce((sum, label) => {
+        const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const match = stdout.match(new RegExp(`${escapedLabel}:\\s+([\\d.]+)`, 'i'))
+        const pages = parseInt((match?.[1] || '0').replace(/\./g, ''), 10)
+        return sum + (Number.isFinite(pages) ? pages : 0)
+      }, 0)
+
+      const vmAvailableBytes = availablePages * pageSize
+      if (vmAvailableBytes > 0) {
+        availableBytes = Math.min(vmAvailableBytes, totalBytes)
+      }
+    } catch {
+      // Fall back to os.freemem()
+    }
+  } else {
+    try {
+      const { stdout } = await runCommand('free', ['-b'], { timeoutMs: 3000 })
+      const memLine = stdout.split('\n').find((line) => line.startsWith('Mem:'))
+      if (memLine) {
+        const parts = memLine.trim().split(/\s+/)
+        const available = parseInt(parts[6] || parts[3] || '0', 10)
+        if (Number.isFinite(available) && available > 0) {
+          availableBytes = Math.min(available, totalBytes)
+        }
+      }
+    } catch {
+      // Fall back to os.freemem()
+    }
+  }
+
+  const usedBytes = Math.max(0, totalBytes - availableBytes)
+  const usagePercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0
+
+  return {
+    totalBytes,
+    availableBytes,
+    usedBytes,
+    usagePercent,
+  }
 }
 
 function getDbStats(workspaceId: number) {
@@ -185,14 +247,211 @@ function getDbStats(workspaceId: number) {
   }
 }
 
+async function getCpuInfo(): Promise<{ model: string; cores: number; loadAvg: { one: number; five: number; fifteen: number } }> {
+  let model = 'Unknown'
+  let cores = os.cpus().length
+  let loadAvg = { one: 0, five: 0, fifteen: 0 }
+
+  try {
+    const cpuinfo = readFileSync('/proc/cpuinfo', 'utf8')
+    const match = cpuinfo.match(/model name\s*:\s*(.+)/)
+    if (match) model = match[1].trim()
+  } catch {}
+
+  try {
+    const loadline = readFileSync('/proc/loadavg', 'utf8').trim().split(/\s+/)
+    loadAvg = {
+      one: parseFloat(loadline[0]) || 0,
+      five: parseFloat(loadline[1]) || 0,
+      fifteen: parseFloat(loadline[2]) || 0,
+    }
+  } catch {}
+
+  return { model, cores, loadAvg }
+}
+
+async function getTopProcesses(): Promise<Array<{ pid: string; name: string; cpu: number; mem: number; command: string }>> {
+  try {
+    const { stdout } = await runCommand('ps', ['aux', '--sort=-%cpu'], { timeoutMs: 4000 })
+    const lines = stdout.trim().split('\n').slice(1) // skip header
+    return lines.slice(0, 12).map(line => {
+      const parts = line.trim().split(/\s+/)
+      const pid = parts[1]
+      const cpu = parseFloat(parts[2]) || 0
+      const mem = parseFloat(parts[3]) || 0
+      const command = parts.slice(10).join(' ')
+      // Extract short process name from command
+      const name = command.split('/').pop()?.split(' ')[0]?.substring(0, 32) || command.substring(0, 32)
+      return { pid, name, cpu, mem, command: command.substring(0, 80) }
+    }).filter(p => p.cpu > 0 || p.mem > 0)
+  } catch {
+    return []
+  }
+}
+
+interface ActiveModelSession {
+  agent: string
+  label: string
+  key: string
+  channel: string
+}
+
+interface OllamaModelStatus {
+  canonicalName: string
+  matchNames: string[]
+  size: string
+  processor: string
+  context: string
+  until: string
+}
+
+const OLLAMA_PROVIDER_ALIAS_PREFIXES = [
+  'anthropic/',
+  'openai/',
+  'google/',
+  'xai/',
+  'groq/',
+  'mistral/',
+  'deepseek/',
+  'meta/',
+]
+
+function getActiveSessionsByModel(): Record<string, ActiveModelSession[]> {
+  try {
+    const sessions = getAllGatewaySessions(5 * 60 * 1000) // active in last 5 min
+    const byModel: Record<string, ActiveModelSession[]> = {}
+    for (const s of sessions) {
+      if (!s.active || !s.model) continue
+      const model = s.model.toLowerCase()
+      if (!byModel[model]) byModel[model] = []
+      byModel[model].push({
+        agent: s.agent,
+        label: s.label || '',
+        key: s.key,
+        channel: s.channel || '',
+      })
+    }
+    return byModel
+  } catch {
+    return {}
+  }
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)))
+}
+
+function stripOllamaTag(name: string): string {
+  const tagIndex = name.lastIndexOf(':')
+  return tagIndex > -1 ? name.slice(0, tagIndex) : name
+}
+
+function isProviderStyleOllamaAlias(name: string): boolean {
+  const normalized = name.trim().toLowerCase()
+  return OLLAMA_PROVIDER_ALIAS_PREFIXES.some(prefix => normalized.startsWith(prefix))
+}
+
+function buildOllamaMatchNames(names: string[]): string[] {
+  return uniqueStrings(names.flatMap(name => [name.toLowerCase(), stripOllamaTag(name).toLowerCase()]))
+}
+
+function pickCanonicalOllamaName(names: string[], loadedName: string): string {
+  const candidates = uniqueStrings(names)
+  if (candidates.length === 0) return loadedName
+
+  const scored = candidates
+    .map(name => ({
+      name,
+      score:
+        (name === loadedName ? 1 : 0) +
+        (!name.includes('/') ? 100 : 0) +
+        (!isProviderStyleOllamaAlias(name) ? 20 : 0) +
+        (!name.endsWith(':latest') ? 5 : 0),
+    }))
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+
+  return scored[0]?.name || loadedName
+}
+
+async function getOllamaModelNamesById(): Promise<Record<string, string[]>> {
+  try {
+    const { stdout } = await runCommand('ollama', ['list'], { timeoutMs: 5000 })
+    const lines = stdout.trim().split('\n')
+    if (lines.length < 2) return {}
+
+    const header = lines[0]
+    const colStarts = ['NAME', 'ID', 'SIZE', 'MODIFIED'].map(col => header.indexOf(col))
+    const byId: Record<string, string[]> = {}
+
+    for (const line of lines.slice(1).filter(l => l.trim())) {
+      const get = (start: number, end: number) => (end > start ? line.slice(start, end) : line.slice(start)).trim()
+      const name = get(colStarts[0], colStarts[1])
+      const id = get(colStarts[1], colStarts[2])
+      if (!name || !id) continue
+      if (!byId[id]) byId[id] = []
+      byId[id].push(name)
+    }
+
+    return byId
+  } catch {
+    return {}
+  }
+}
+
+async function getOllamaModels(): Promise<OllamaModelStatus[]> {
+  try {
+    const [{ stdout }, modelNamesById] = await Promise.all([
+      runCommand('ollama', ['ps'], { timeoutMs: 5000 }),
+      getOllamaModelNamesById(),
+    ])
+
+    const lines = stdout.trim().split('\n')
+    if (lines.length < 2) return []
+
+    const header = lines[0]
+    const colStarts = ['NAME', 'ID', 'SIZE', 'PROCESSOR', 'CONTEXT', 'UNTIL'].map(col => header.indexOf(col))
+
+    return lines.slice(1)
+      .filter(l => l.trim())
+      .map(line => {
+        const get = (start: number, end: number) => (end > start ? line.slice(start, end) : line.slice(start)).trim()
+        const name = get(colStarts[0], colStarts[1])
+        const id = get(colStarts[1], colStarts[2])
+        const relatedNames = uniqueStrings([name, ...(modelNamesById[id] || [])])
+        const canonicalName = pickCanonicalOllamaName(relatedNames, name)
+
+        return {
+          canonicalName,
+          matchNames: buildOllamaMatchNames(relatedNames),
+          size: get(colStarts[2], colStarts[3]),
+          processor: get(colStarts[3], colStarts[4] > 0 ? colStarts[4] : colStarts[5]),
+          context: colStarts[4] > 0 ? get(colStarts[4], colStarts[5]) : '',
+          until: colStarts[5] > 0 ? get(colStarts[5], line.length) : '',
+        }
+      })
+      .filter(m => m.canonicalName)
+  } catch {
+    return []
+  }
+}
+
 async function getSystemStatus(workspaceId: number) {
   const status: any = {
     timestamp: Date.now(),
     uptime: 0,
     memory: { total: 0, used: 0, available: 0 },
     disk: { total: 0, used: 0, available: 0 },
+    cpu: 0,
+    network: { inKBs: 0, outKBs: 0 },
+    gpu: null,
     sessions: { total: 0, active: 0 },
-    processes: []
+    processes: [],
+    cpuModel: '',
+    cpuCores: 0,
+    loadAvg: { one: 0, five: 0, fifteen: 0 },
+    topProcesses: [] as any[],
+    ollamaModels: [] as OllamaModelStatus[],
+    activeSessionsByModel: {} as Record<string, ActiveModelSession[]>,
   }
 
   try {
@@ -219,26 +478,11 @@ async function getSystemStatus(workspaceId: number) {
 
   try {
     // Memory info (cross-platform)
-    if (process.platform === 'darwin') {
-      const totalBytes = os.totalmem()
-      const freeBytes = os.freemem()
-      const totalMB = Math.round(totalBytes / (1024 * 1024))
-      const usedMB = Math.round((totalBytes - freeBytes) / (1024 * 1024))
-      const availableMB = Math.round(freeBytes / (1024 * 1024))
-      status.memory = { total: totalMB, used: usedMB, available: availableMB }
-    } else {
-      const { stdout: memOutput } = await runCommand('free', ['-m'], {
-        timeoutMs: 3000
-      })
-      const memLine = memOutput.split('\n').find(line => line.startsWith('Mem:'))
-      if (memLine) {
-        const parts = memLine.split(/\s+/)
-        status.memory = {
-          total: parseInt(parts[1]) || 0,
-          used: parseInt(parts[2]) || 0,
-          available: parseInt(parts[6]) || 0
-        }
-      }
+    const snapshot = await getMemorySnapshot()
+    status.memory = {
+      total: Math.round(snapshot.totalBytes / (1024 * 1024)),
+      used: Math.round(snapshot.usedBytes / (1024 * 1024)),
+      available: Math.round(snapshot.availableBytes / (1024 * 1024)),
     }
   } catch (error) {
     logger.error({ err: error }, 'Error getting memory info')
@@ -261,6 +505,28 @@ async function getSystemStatus(workspaceId: number) {
     }
   } catch (error) {
     logger.error({ err: error }, 'Error getting disk info')
+  }
+
+  try {
+    const [cpuUsage, networkStats, gpuStats, cpuInfo, topProcesses, ollamaModels] = await Promise.all([
+      getCpuUsage(),
+      getNetworkStats(),
+      getGpuStats(),
+      getCpuInfo(),
+      getTopProcesses(),
+      getOllamaModels()
+    ])
+    status.cpu = cpuUsage
+    status.network = networkStats
+    status.gpu = gpuStats
+    status.cpuModel = cpuInfo.model
+    status.cpuCores = cpuInfo.cores
+    status.loadAvg = cpuInfo.loadAvg
+    status.topProcesses = topProcesses
+    status.ollamaModels = ollamaModels
+    status.activeSessionsByModel = getActiveSessionsByModel()
+  } catch (error) {
+    logger.error({ err: error }, 'Error getting CPU/network/GPU stats')
   }
 
   try {
@@ -324,6 +590,67 @@ async function getSystemStatus(workspaceId: number) {
   }
 
   return status
+}
+
+async function getCpuUsage(): Promise<number> {
+  function parseStat() {
+    const line = readFileSync('/proc/stat', 'utf8').split('\n')[0]
+    const nums = line.replace('cpu', '').trim().split(/\s+/).map(Number)
+    const idle = nums[3] + nums[4]
+    const total = nums.reduce((a, b) => a + b, 0)
+    return { idle, total }
+  }
+  const s1 = parseStat()
+  await new Promise(r => setTimeout(r, 200))
+  const s2 = parseStat()
+  const idleDiff = s2.idle - s1.idle
+  const totalDiff = s2.total - s1.total
+  return Math.round((1 - idleDiff / totalDiff) * 100)
+}
+
+async function getNetworkStats(): Promise<{ inKBs: number; outKBs: number }> {
+  function parseNetDev() {
+    const lines = readFileSync('/proc/net/dev', 'utf8').split('\n').slice(2)
+    let rxBytes = 0, txBytes = 0
+    for (const line of lines) {
+      if (!line.trim() || line.includes('lo:')) continue
+      const parts = line.trim().split(/\s+/)
+      rxBytes += parseInt(parts[1]) || 0
+      txBytes += parseInt(parts[9]) || 0
+    }
+    return { rxBytes, txBytes }
+  }
+  const s1 = parseNetDev()
+  await new Promise(r => setTimeout(r, 200))
+  const s2 = parseNetDev()
+  return {
+    inKBs: Math.round((s2.rxBytes - s1.rxBytes) / 200),
+    outKBs: Math.round((s2.txBytes - s1.txBytes) / 200)
+  }
+}
+
+async function getGpuStats(): Promise<{
+  name: string; utilization: number;
+  memUsed: number; memTotal: number; temp: number
+} | null> {
+  try {
+    const { stdout } = await runCommand(
+      '/usr/lib/wsl/lib/nvidia-smi',
+      ['--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu',
+       '--format=csv,noheader,nounits'],
+      { timeoutMs: 3000 }
+    )
+    const parts = stdout.trim().split(',').map((s: string) => s.trim())
+    return {
+      name: parts[0],
+      utilization: parseInt(parts[1]),
+      memUsed: parseInt(parts[2]),
+      memTotal: parseInt(parts[3]),
+      temp: parseInt(parts[4])
+    }
+  } catch {
+    return null
+  }
 }
 
 async function getGatewayStatus() {
@@ -413,9 +740,67 @@ async function getAvailableModels() {
 
 async function performHealthCheck() {
   const health: any = {
-    overall: 'healthy',
+    status: 'healthy',
+    version: APP_VERSION,
+    uptime: process.uptime(),
     checks: [],
     timestamp: Date.now()
+  }
+
+  // Check DB connectivity
+  try {
+    const db = getDatabase()
+    const start = Date.now()
+    db.prepare('SELECT 1').get()
+    const elapsed = Date.now() - start
+
+    let dbStatus: string
+    if (elapsed > 1000) {
+      dbStatus = 'warning'
+    } else {
+      dbStatus = 'healthy'
+    }
+
+    health.checks.push({
+      name: 'Database',
+      status: dbStatus,
+      message: dbStatus === 'healthy' ? `DB reachable (${elapsed}ms)` : `DB slow (${elapsed}ms)`
+    })
+  } catch (error) {
+    health.checks.push({
+      name: 'Database',
+      status: 'unhealthy',
+      message: 'DB connectivity failed'
+    })
+  }
+
+  // Check process memory
+  try {
+    const mem = process.memoryUsage()
+    const rssMB = Math.round(mem.rss / (1024 * 1024))
+    let memStatus = 'healthy'
+    if (mem.rss > 800 * 1024 * 1024) {
+      memStatus = 'critical'
+    } else if (mem.rss > 400 * 1024 * 1024) {
+      memStatus = 'warning'
+    }
+
+    health.checks.push({
+      name: 'Process Memory',
+      status: memStatus,
+      message: `RSS: ${rssMB}MB, Heap: ${Math.round(mem.heapUsed / (1024 * 1024))}/${Math.round(mem.heapTotal / (1024 * 1024))}MB`,
+      detail: {
+        rss: mem.rss,
+        heapUsed: mem.heapUsed,
+        heapTotal: mem.heapTotal,
+      }
+    })
+  } catch (error) {
+    health.checks.push({
+      name: 'Process Memory',
+      status: 'error',
+      message: 'Failed to check process memory'
+    })
   }
 
   // Check gateway connection
@@ -445,7 +830,7 @@ async function performHealthCheck() {
     // On macOS capacity is col 4 ("85%"), on Linux use% is col 4 as well
     const pctField = parts.find(p => p.endsWith('%')) || '0%'
     const usagePercent = parseInt(pctField.replace('%', '') || '0')
-    
+
     health.checks.push({
       name: 'Disk Space',
       status: usagePercent < 90 ? 'healthy' : usagePercent < 95 ? 'warning' : 'critical',
@@ -461,19 +846,7 @@ async function performHealthCheck() {
 
   // Check memory usage (cross-platform)
   try {
-    let usagePercent: number
-    if (process.platform === 'darwin') {
-      const totalBytes = os.totalmem()
-      const freeBytes = os.freemem()
-      usagePercent = Math.round(((totalBytes - freeBytes) / totalBytes) * 100)
-    } else {
-      const { stdout } = await runCommand('free', ['-m'], { timeoutMs: 3000 })
-      const memLine = stdout.split('\n').find((line) => line.startsWith('Mem:'))
-      const parts = (memLine || '').split(/\s+/)
-      const total = parseInt(parts[1] || '0')
-      const available = parseInt(parts[6] || '0')
-      usagePercent = Math.round(((total - available) / total) * 100)
-    }
+    const usagePercent = (await getMemorySnapshot()).usagePercent
 
     health.checks.push({
       name: 'Memory Usage',
@@ -492,18 +865,43 @@ async function performHealthCheck() {
   const hasError = health.checks.some((check: any) => check.status === 'error')
   const hasCritical = health.checks.some((check: any) => check.status === 'critical')
   const hasWarning = health.checks.some((check: any) => check.status === 'warning')
+  const hasDegraded = health.checks.some((check: any) =>
+    check.name === 'Database' && check.status === 'warning'
+  )
 
   if (hasError || hasCritical) {
-    health.overall = 'unhealthy'
+    health.status = 'unhealthy'
+  } else if (hasDegraded) {
+    health.status = 'degraded'
   } else if (hasWarning) {
-    health.overall = 'warning'
+    health.status = 'warning'
   }
 
   return health
 }
 
-async function getCapabilities() {
-  const gateway = await isPortOpen(config.gatewayHost, config.gatewayPort)
+async function getCapabilities(request?: NextRequest) {
+  // Probe configured gateways (if any) or fall back to the default port.
+  // A DB row alone isn't enough — the gateway must actually be reachable.
+  let gatewayReachable = false
+  try {
+    const db = getDatabase()
+    const table = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='gateways'"
+    ).get() as { name?: string } | undefined
+    if (table?.name) {
+      const rows = db.prepare('SELECT host, port FROM gateways').all() as { host: string; port: number }[]
+      if (rows.length > 0) {
+        const probes = rows.map(r => isPortOpen(r.host, Number(r.port)))
+        const results = await Promise.all(probes)
+        gatewayReachable = results.some(Boolean)
+      }
+    }
+  } catch {
+    // ignore — fall through to default probe
+  }
+
+  const gateway = gatewayReachable || await isPortOpen(config.gatewayHost, config.gatewayPort)
 
   const openclawHome = Boolean(
     (config.openclawStateDir && existsSync(config.openclawStateDir)) ||
@@ -531,7 +929,62 @@ async function getCapabilities() {
     provider: primary.provider,
   } : null
 
-  return { gateway, openclawHome, claudeHome, claudeSessions, subscription, subscriptions }
+  // Apply subscription overrides from settings
+  try {
+    const settingsDb = getDatabase()
+    const planOverride = settingsDb.prepare("SELECT value FROM settings WHERE key = 'subscription.plan_override'").get() as { value: string } | undefined
+    if (planOverride?.value && subscription) {
+      subscription.type = planOverride.value
+    }
+    const codexPlan = settingsDb.prepare("SELECT value FROM settings WHERE key = 'subscription.codex_plan'").get() as { value: string } | undefined
+    if (codexPlan?.value) {
+      subscriptions['openai'] = { provider: 'openai', type: codexPlan.value, source: 'env' as const }
+    }
+  } catch {
+    // settings table may not exist yet
+  }
+
+  const processUser = process.env.MC_DEFAULT_ORG_NAME || os.userInfo().username
+
+  // Interface mode preference
+  let interfaceMode = 'essential'
+  try {
+    const settingsDb = getDatabase()
+    const modeRow = settingsDb.prepare("SELECT value FROM settings WHERE key = 'general.interface_mode'").get() as { value: string } | undefined
+    if (modeRow?.value === 'full' || modeRow?.value === 'essential') {
+      interfaceMode = modeRow.value
+    }
+  } catch {
+    // settings table may not exist yet
+  }
+
+  const hermesInstalled = isHermesInstalled()
+  let hermesSessions = 0
+  if (hermesInstalled) {
+    try {
+      hermesSessions = scanHermesSessions(50).filter(s => s.isActive).length
+    } catch { /* ignore */ }
+  }
+
+  // Auto-register MC as default dashboard when gateway + openclaw home detected
+  let dashboardRegistration: { registered: boolean; alreadySet: boolean } | null = null
+  if (gateway && openclawHome) {
+    try {
+      let mcUrl = process.env.MC_BASE_URL || ''
+      if (!mcUrl && request) {
+        const host = request.headers.get('host')
+        const proto = request.headers.get('x-forwarded-proto') || 'http'
+        if (host) mcUrl = `${proto}://${host}`
+      }
+      if (mcUrl) {
+        dashboardRegistration = registerMcAsDashboard(mcUrl)
+      }
+    } catch (err) {
+      logger.error({ err }, 'Dashboard registration failed')
+    }
+  }
+
+  return { gateway, openclawHome, claudeHome, claudeSessions, hermesInstalled, hermesSessions, subscription, subscriptions, processUser, interfaceMode, dashboardRegistration }
 }
 
 function isPortOpen(host: string, port: number): Promise<boolean> {

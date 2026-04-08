@@ -1,0 +1,189 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { requireRole } from '@/lib/auth'
+import { getProviderSubscriptionFlags } from '@/lib/provider-subscriptions'
+import { logger } from '@/lib/logger'
+import {
+  calculatePreferredRequestCount,
+  extractAgentName,
+  filterByTimeframe,
+  loadTokenData,
+  resolveTimeframeRange,
+  type TokenUsageRecord,
+} from '@/app/api/tokens/route'
+
+interface ModelBreakdown {
+  model: string
+  input_tokens: number
+  output_tokens: number
+  request_count: number
+  cost: number
+}
+
+type RequestCountRecord = Pick<TokenUsageRecord, 'sessionId' | 'model' | 'operation'>
+
+interface ModelAccumulator {
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cost: number
+  requestRecords: RequestCountRecord[]
+}
+
+interface AgentBreakdown {
+  agent: string
+  total_input_tokens: number
+  total_output_tokens: number
+  total_tokens: number
+  total_cost: number
+  session_count: number
+  request_count: number
+  last_active: string
+  models: ModelBreakdown[]
+}
+
+interface AgentAccumulator {
+  agent: string
+  total_input_tokens: number
+  total_output_tokens: number
+  total_cost: number
+  last_active_ts: number
+  sessions: Set<string>
+  requestRecords: RequestCountRecord[]
+  models: Map<string, ModelAccumulator>
+}
+
+/**
+ * GET /api/tokens/by-agent - Per-agent cost breakdown from all token sources
+ * Query params:
+ *   timeframe=<key> - Named timeframe (hour, day, week, month/rolling30d, previous_month)
+ *   days=N  - Time window in days (default 30, used when timeframe is omitted)
+ *   ignoreSubscriptions=true - do not zero-out subscribed provider costs
+ */
+export async function GET(request: NextRequest) {
+  const auth = requireRole(request, 'viewer')
+  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+
+  try {
+    const { searchParams } = new URL(request.url)
+    const timeframe = (searchParams.get('timeframe') || '').trim().toLowerCase()
+    const days = Math.max(1, Math.min(365, Number(searchParams.get('days') || 30)))
+    const ignoreSubscriptions = searchParams.get('ignoreSubscriptions') === 'true'
+    const workspaceId = auth.user.workspace_id ?? 1
+
+    const providerSubscriptions = ignoreSubscriptions ? {} : getProviderSubscriptionFlags()
+    const allRecords = await loadTokenData(workspaceId, providerSubscriptions)
+
+    let records = allRecords
+    let effectiveDays = days
+
+    if (timeframe) {
+      records = filterByTimeframe(allRecords, timeframe)
+      const range = resolveTimeframeRange(timeframe)
+      if (range) {
+        const endMs = range.endMs ?? Date.now()
+        effectiveDays = Math.max(1, Math.ceil((endMs - range.startMs) / 86_400_000))
+      }
+    } else {
+      const cutoffMs = Date.now() - days * 86_400_000
+      records = allRecords.filter((record) => record.timestamp >= cutoffMs)
+    }
+
+    const byAgent = new Map<string, AgentAccumulator>()
+    for (const record of records) {
+      const agentName = record.agentName || extractAgentName(record.sessionId)
+      const requestRecord: RequestCountRecord = {
+        sessionId: record.sessionId,
+        model: record.model,
+        operation: record.operation,
+      }
+
+      let agent = byAgent.get(agentName)
+      if (!agent) {
+        agent = {
+          agent: agentName,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          total_cost: 0,
+          last_active_ts: 0,
+          sessions: new Set(),
+          requestRecords: [],
+          models: new Map(),
+        }
+        byAgent.set(agentName, agent)
+      }
+
+      agent.total_input_tokens += record.inputTokens
+      agent.total_output_tokens += record.outputTokens
+      agent.total_cost += record.cost
+      agent.requestRecords.push(requestRecord)
+      agent.sessions.add(record.sessionId)
+      if (record.timestamp > agent.last_active_ts) {
+        agent.last_active_ts = record.timestamp
+      }
+
+      let model = agent.models.get(record.model)
+      if (!model) {
+        model = {
+          model: record.model,
+          input_tokens: 0,
+          output_tokens: 0,
+          cost: 0,
+          requestRecords: [],
+        }
+        agent.models.set(record.model, model)
+      }
+      model.input_tokens += record.inputTokens
+      model.output_tokens += record.outputTokens
+      model.cost += record.cost
+      model.requestRecords.push(requestRecord)
+    }
+
+    const agents: AgentBreakdown[] = [...byAgent.values()]
+      .map((agent) => {
+        const models = [...agent.models.values()]
+          .map((model): ModelBreakdown => ({
+            model: model.model,
+            input_tokens: model.input_tokens,
+            output_tokens: model.output_tokens,
+            request_count: calculatePreferredRequestCount(model.requestRecords),
+            cost: model.cost,
+          }))
+          .sort((a, b) => {
+            if (b.cost !== a.cost) return b.cost - a.cost
+            return (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)
+          })
+
+        return {
+          agent: agent.agent,
+          total_input_tokens: agent.total_input_tokens,
+          total_output_tokens: agent.total_output_tokens,
+          total_tokens: agent.total_input_tokens + agent.total_output_tokens,
+          total_cost: agent.total_cost,
+          session_count: agent.sessions.size,
+          request_count: calculatePreferredRequestCount(agent.requestRecords),
+          last_active: new Date(agent.last_active_ts || 0).toISOString(),
+          models,
+        }
+      })
+      .sort((a, b) => {
+        if (b.total_tokens !== a.total_tokens) return b.total_tokens - a.total_tokens
+        return b.total_cost - a.total_cost
+      })
+
+    const totalCost = agents.reduce((sum, a) => sum + a.total_cost, 0)
+    const totalTokens = agents.reduce((sum, a) => sum + a.total_tokens, 0)
+
+    return NextResponse.json({
+      agents,
+      summary: {
+        total_cost: totalCost,
+        total_tokens: totalTokens,
+        agent_count: agents.length,
+        days: effectiveDays,
+      },
+    })
+  } catch (error) {
+    logger.error({ err: error }, 'GET /api/tokens/by-agent error')
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
