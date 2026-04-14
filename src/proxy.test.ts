@@ -8,14 +8,14 @@ describe('proxy host matching', () => {
   it('allows the system hostname implicitly', async () => {
     vi.resetModules()
     vi.doMock('node:os', () => ({
-      default: { hostname: () => 'hetzner-jarv' },
-      hostname: () => 'hetzner-jarv',
+      default: { hostname: () => 'hetzner-mc' },
+      hostname: () => 'hetzner-mc',
     }))
 
     const { proxy } = await import('./proxy')
     const request = {
-      headers: new Headers({ host: 'hetzner-jarv' }),
-      nextUrl: { host: 'hetzner-jarv', hostname: 'hetzner-jarv', pathname: '/login', clone: () => ({ pathname: '/login' }) },
+      headers: new Headers({ host: 'hetzner-mc' }),
+      nextUrl: { host: 'hetzner-mc', hostname: 'hetzner-mc', pathname: '/login', clone: () => ({ pathname: '/login' }) },
       method: 'GET',
       cookies: { get: () => undefined },
     } as any
@@ -31,8 +31,8 @@ describe('proxy host matching', () => {
   it('keeps blocking unrelated hosts in production', async () => {
     vi.resetModules()
     vi.doMock('node:os', () => ({
-      default: { hostname: () => 'hetzner-jarv' },
-      hostname: () => 'hetzner-jarv',
+      default: { hostname: () => 'hetzner-mc' },
+      hostname: () => 'hetzner-mc',
     }))
 
     const { proxy } = await import('./proxy')
@@ -54,8 +54,8 @@ describe('proxy host matching', () => {
   it('allows unauthenticated health probe for /api/status?action=health', async () => {
     vi.resetModules()
     vi.doMock('node:os', () => ({
-      default: { hostname: () => 'hetzner-jarv' },
-      hostname: () => 'hetzner-jarv',
+      default: { hostname: () => 'hetzner-mc' },
+      hostname: () => 'hetzner-mc',
     }))
 
     const { proxy } = await import('./proxy')
@@ -83,8 +83,8 @@ describe('proxy host matching', () => {
   it('still blocks unauthenticated non-health status API calls', async () => {
     vi.resetModules()
     vi.doMock('node:os', () => ({
-      default: { hostname: () => 'hetzner-jarv' },
-      hostname: () => 'hetzner-jarv',
+      default: { hostname: () => 'hetzner-mc' },
+      hostname: () => 'hetzner-mc',
     }))
 
     const { proxy } = await import('./proxy')

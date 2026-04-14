@@ -169,14 +169,68 @@ interface ReviewableTask {
   project_ticket_no: number | null
 }
 
-function resolveGatewayAgentIdForReview(task: ReviewableTask): string {
-  if (task.agent_config) {
-    try {
-      const cfg = JSON.parse(task.agent_config)
-      if (typeof cfg.openclawId === 'string' && cfg.openclawId) return cfg.openclawId
-    } catch { /* ignore */ }
+interface ReviewAgentCandidate {
+  name: string
+  role: string | null
+  config: string | null
+}
+
+function parseAgentConfig(config: string | null): Record<string, unknown> | null {
+  if (!config) return null
+  try {
+    const parsed = JSON.parse(config)
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
   }
-  return task.assigned_to || 'jarv'
+}
+
+function getOpenClawIdFromConfig(config: string | null): string | null {
+  const parsed = parseAgentConfig(config)
+  const openclawId = parsed?.openclawId
+  return typeof openclawId === 'string' && openclawId.trim() ? openclawId.trim() : null
+}
+
+function isDefaultAgent(config: string | null): boolean {
+  return parseAgentConfig(config)?.isDefault === true
+}
+
+function resolveAgentIdentifier(agent: ReviewAgentCandidate): string {
+  return getOpenClawIdFromConfig(agent.config) || agent.name
+}
+
+export function resolveAegisReviewAgentId(agents: ReviewAgentCandidate[]): string {
+  const normalized = agents.map((agent) => ({
+    ...agent,
+    lowerName: String(agent.name || '').trim().toLowerCase(),
+    lowerRole: String(agent.role || '').trim().toLowerCase(),
+  }))
+
+  const explicitAegis = normalized.find((agent) => agent.lowerName === 'aegis')
+  if (explicitAegis) return resolveAgentIdentifier(explicitAegis)
+
+  const reviewerAgent = normalized.find((agent) => agent.lowerRole === 'reviewer')
+  if (reviewerAgent) return resolveAgentIdentifier(reviewerAgent)
+
+  const defaultAgent = normalized.find((agent) => isDefaultAgent(agent.config))
+  if (defaultAgent) return resolveAgentIdentifier(defaultAgent)
+
+  const mainAgent = normalized.find((agent) => agent.lowerName === 'main')
+  if (mainAgent) return resolveAgentIdentifier(mainAgent)
+
+  throw new Error('No review agent configured for Aegis review (expected aegis, reviewer-role, default agent, or main)')
+}
+
+function resolveGatewayAgentIdForReview(task: ReviewableTask): string {
+  const db = getDatabase()
+  const agents = db.prepare(`
+    SELECT name, role, config
+    FROM agents
+    WHERE workspace_id = ?
+    ORDER BY id ASC
+  `).all(task.workspace_id) as ReviewAgentCandidate[]
+
+  return resolveAegisReviewAgentId(agents)
 }
 
 function buildReviewPrompt(task: ReviewableTask): string {
@@ -262,7 +316,7 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
 
     try {
       const prompt = buildReviewPrompt(task)
-      // Resolve the gateway agent ID from config, falling back to assigned_to or default
+      // Resolve the gateway review agent from the workspace registry (aegis -> reviewer -> default -> main)
       const reviewAgent = resolveGatewayAgentIdForReview(task)
 
       const invokeParams = {

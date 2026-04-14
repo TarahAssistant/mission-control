@@ -41,7 +41,7 @@ Run: openclaw doctor --fix
     const result = parseOpenClawDoctorOutput(`
 ◇  State integrity
 - Multiple state directories detected. This can split session history.
-- Found 1 orphan transcript file(s) in ~/.openclaw/agents/jarv/sessions.
+- Found 1 orphan transcript file(s) in ~/.openclaw/agents/reviewer/sessions.
 Run "openclaw doctor --fix" to apply changes.
 `, 0)
 
@@ -57,7 +57,7 @@ Run "openclaw doctor --fix" to apply changes.
 - Multiple state directories detected. This can split session history.
   - /home/nefes/.openclaw
   Active state dir: ~/.openclaw
-- Found 1 orphan transcript file(s) in ~/.openclaw/agents/jarv/sessions.
+- Found 1 orphan transcript file(s) in ~/.openclaw/agents/reviewer/sessions.
 Run "openclaw doctor --fix" to apply changes.
 `, 0, { stateDir: '/home/openclaw/.openclaw' })
 
@@ -65,7 +65,7 @@ Run "openclaw doctor --fix" to apply changes.
     expect(result.level).toBe('warning')
     expect(result.category).toBe('state')
     expect(result.issues).toEqual([
-      'Found 1 orphan transcript file(s) in ~/.openclaw/agents/jarv/sessions.',
+      'Found 1 orphan transcript file(s) in ~/.openclaw/agents/reviewer/sessions.',
     ])
     expect(result.raw).not.toContain('/home/nefes/.openclaw')
   })
@@ -80,7 +80,7 @@ Run "openclaw doctor --fix" to apply changes.
   - $OPENCLAW_HOME/.openclaw
   - /home/nefes/.openclaw
   Active state dir: $OPENCLAW_HOME
-- Found 11 orphan transcript file(s) in $OPENCLAW_HOME/agents/jarv/sessions.
+- Found 11 orphan transcript file(s) in $OPENCLAW_HOME/agents/reviewer/sessions.
 Run "openclaw doctor --fix" to apply changes.
 `, 0, { stateDir: '/home/openclaw/.openclaw' })
 
@@ -98,14 +98,14 @@ Run "openclaw doctor --fix" to apply changes.
 │    - $OPENCLAW_HOME/.openclaw
 │    - /home/nefes/.openclaw
 │    Active state dir: $OPENCLAW_HOME
-│  - Found 11 orphan transcript file(s) in $OPENCLAW_HOME/agents/jarv/sessions.
+│  - Found 11 orphan transcript file(s) in $OPENCLAW_HOME/agents/reviewer/sessions.
 Run "openclaw doctor --fix" to apply changes.
 `, 0, { stateDir: '/home/openclaw/.openclaw' })
 
     expect(result.level).toBe('warning')
     expect(result.category).toBe('state')
     expect(result.issues).toEqual([
-      'Found 11 orphan transcript file(s) in $OPENCLAW_HOME/agents/jarv/sessions.',
+      'Found 11 orphan transcript file(s) in $OPENCLAW_HOME/agents/reviewer/sessions.',
     ])
     expect(result.raw).not.toContain('/home/nefes/.openclaw')
     expect(result.raw).not.toContain('Multiple state directories detected')

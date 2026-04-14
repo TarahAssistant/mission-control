@@ -26,7 +26,7 @@ describe('removeAgentFromConfig', () => {
         {
           agents: {
             list: [
-              { id: 'jarv', name: 'jarv', identity: { name: 'jarv' } },
+              { id: 'reviewer', name: 'reviewer', identity: { name: 'reviewer' } },
               { id: 'neo', identity: { name: 'Neo' } },
               { id: 'keep-me', name: 'keep-me', identity: { name: 'keep-me' } },
             ],
@@ -47,7 +47,7 @@ describe('removeAgentFromConfig', () => {
     expect(result.removed).toBe(true)
     const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
     expect(parsed.agents.list).toEqual([
-      { id: 'jarv', name: 'jarv', identity: { name: 'jarv' } },
+      { id: 'reviewer', name: 'reviewer', identity: { name: 'reviewer' } },
       { id: 'keep-me', name: 'keep-me', identity: { name: 'keep-me' } },
     ])
   })

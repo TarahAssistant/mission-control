@@ -14,7 +14,7 @@ import { callOpenClawGateway } from '@/lib/openclaw-gateway'
  * OpenClaw stores session transcripts at:
  *   {OPENCLAW_STATE_DIR}/agents/{agent}/sessions/{sessionId}.jsonl
  *
- * The session key (e.g. "agent:jarv:cron:task-name") is used to look up
+ * The session key (e.g. "agent:main:cron:task-name") is used to look up
  * the sessionId from the agent's sessions.json, then the JSONL file is read.
  */
 export async function GET(request: NextRequest) {
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
       logger.warn({ err: rpcErr, sessionKey }, 'Gateway chat.history failed, falling back to disk transcript')
     }
 
-    // Extract agent name from session key (e.g. "agent:jarv:main" -> "jarv")
+    // Extract agent name from session key (e.g. "agent:main:main" -> "main")
     const agentName = extractAgentName(sessionKey)
     if (!agentName) {
       return NextResponse.json({ messages: [], source: 'gateway', error: 'Could not determine agent from session key' })

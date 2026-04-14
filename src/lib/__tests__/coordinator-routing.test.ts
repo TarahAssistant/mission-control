@@ -46,7 +46,7 @@ describe('resolveCoordinatorDeliveryTarget', () => {
 
   it('resolves coordinator to explicitly configured target when present', () => {
     const allAgents: CoordinatorAgentRecord[] = [
-      { name: 'jarv', config: JSON.stringify({ openclawId: 'jarv' }) },
+      { name: 'reviewer', config: JSON.stringify({ openclawId: 'reviewer' }) },
       { name: 'dev', config: JSON.stringify({ isDefault: true, openclawId: 'dev' }) },
     ]
 
@@ -55,21 +55,21 @@ describe('resolveCoordinatorDeliveryTarget', () => {
       coordinatorAgent: 'Coordinator',
       directAgent: null,
       allAgents,
-      sessions: [mkSession('jarv', 'agent:jarv:main')],
-      configuredCoordinatorTarget: 'jarv',
+      sessions: [mkSession('reviewer', 'agent:reviewer:main')],
+      configuredCoordinatorTarget: 'reviewer',
     })
 
     expect(resolved).toEqual({
-      deliveryName: 'jarv',
-      sessionKey: 'agent:jarv:main',
-      openclawAgentId: 'jarv',
+      deliveryName: 'reviewer',
+      sessionKey: 'agent:reviewer:main',
+      openclawAgentId: 'reviewer',
       resolvedBy: 'configured',
     })
   })
 
   it('resolves coordinator to default agent when no explicit target is configured', () => {
     const allAgents: CoordinatorAgentRecord[] = [
-      { name: 'jarv', config: JSON.stringify({ openclawId: 'jarv' }) },
+      { name: 'reviewer', config: JSON.stringify({ openclawId: 'reviewer' }) },
       { name: 'dev', config: JSON.stringify({ isDefault: true, openclawId: 'dev' }) },
     ]
 
@@ -95,13 +95,13 @@ describe('resolveCoordinatorDeliveryTarget', () => {
       coordinatorAgent: 'Coordinator',
       directAgent: null,
       allAgents: [{ name: 'admin', config: JSON.stringify({ openclawId: 'admin' }) }],
-      sessions: [mkSession('jarv', 'agent:jarv:main')],
+      sessions: [mkSession('reviewer', 'agent:reviewer:main')],
     })
 
     expect(resolved).toEqual({
-      deliveryName: 'jarv',
-      sessionKey: 'agent:jarv:main',
-      openclawAgentId: 'jarv',
+      deliveryName: 'reviewer',
+      sessionKey: 'agent:reviewer:main',
+      openclawAgentId: 'reviewer',
       resolvedBy: 'main_session',
     })
   })

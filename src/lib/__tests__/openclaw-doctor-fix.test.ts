@@ -21,14 +21,14 @@ afterEach(() => {
 describe('archiveOrphanTranscriptsForStateDir', () => {
   it('archives only unreferenced primary transcript files', () => {
     const stateDir = makeStateDir()
-    const sessionsDir = path.join(stateDir, 'agents', 'jarv', 'sessions')
+    const sessionsDir = path.join(stateDir, 'agents', 'reviewer', 'sessions')
     fs.mkdirSync(sessionsDir, { recursive: true })
 
     fs.writeFileSync(path.join(sessionsDir, 'sessions.json'), JSON.stringify({
-      'agent:jarv:main': {
+      'agent:reviewer:main': {
         sessionId: 'keep-session',
       },
-      'agent:jarv:custom': {
+      'agent:reviewer:custom': {
         sessionFile: path.join(sessionsDir, 'custom-session.jsonl'),
       },
     }))

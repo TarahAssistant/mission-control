@@ -14,6 +14,8 @@ import { detectProviderSubscriptions, getPrimarySubscription } from '@/lib/provi
 import { APP_VERSION } from '@/lib/version'
 import { isHermesInstalled, scanHermesSessions } from '@/lib/hermes-sessions'
 import { registerMcAsDashboard } from '@/lib/gateway-runtime'
+import { callOpenClawGateway, parseGatewayJsonOutput } from '@/lib/openclaw-gateway'
+import { deriveDiscordTransportHealthCheck } from '@/lib/gateway-channel-health'
 
 export async function GET(request: NextRequest) {
   // Docker/Kubernetes health probes must work without auth/cookies.
@@ -653,6 +655,26 @@ async function getGpuStats(): Promise<{
   }
 }
 
+async function loadChannelsStatusForHealth() {
+  try {
+    return await callOpenClawGateway(
+      'channels.status',
+      { probe: false, timeoutMs: 5000 },
+      7000,
+    )
+  } catch {
+    const { stdout } = await runOpenClaw(
+      ['channels', 'status', '--json', '--timeout', '5000'],
+      { timeoutMs: 9000 },
+    )
+    const payload = parseGatewayJsonOutput(stdout)
+    if (payload == null) {
+      throw new Error('Invalid JSON response from channels status fallback')
+    }
+    return payload
+  }
+}
+
 async function getGatewayStatus() {
   const gatewayStatus: any = {
     running: false,
@@ -811,6 +833,22 @@ async function performHealthCheck() {
       status: gatewayStatus.running ? 'healthy' : 'unhealthy',
       message: gatewayStatus.running ? 'Gateway is running' : 'Gateway is not running'
     })
+
+    if (gatewayStatus.running && gatewayStatus.port_listening) {
+      try {
+        const channelsStatus = await loadChannelsStatusForHealth()
+        const discordTransportCheck = deriveDiscordTransportHealthCheck(channelsStatus)
+        if (discordTransportCheck) {
+          health.checks.push(discordTransportCheck)
+        }
+      } catch {
+        health.checks.push({
+          name: 'Discord Transport',
+          status: 'warning',
+          message: 'Failed to inspect Discord transport health',
+        })
+      }
+    }
   } catch (error) {
     health.checks.push({
       name: 'Gateway',
